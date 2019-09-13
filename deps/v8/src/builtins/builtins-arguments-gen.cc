@@ -40,20 +40,20 @@ ArgumentsBuiltinsAssembler::AllocateArgumentsObject(Node* map,
       empty ? IntPtrConstant(base_size)
             : ElementOffsetFromIndex(element_count, PACKED_ELEMENTS, mode,
                                      base_size + FixedArray::kHeaderSize);
-  TNode<Object> result = Allocate(size);
+  TNode<HeapObject> result = Allocate(size);
   Comment("Initialize arguments object");
   StoreMapNoWriteBarrier(result, map);
-  Node* empty_fixed_array = LoadRoot(RootIndex::kEmptyFixedArray);
+  TNode<FixedArray> empty_fixed_array = EmptyFixedArrayConstant();
   StoreObjectField(result, JSArray::kPropertiesOrHashOffset, empty_fixed_array);
-  Node* smi_arguments_count = ParameterToTagged(arguments_count, mode);
+  TNode<Smi> smi_arguments_count = ParameterToTagged(arguments_count, mode);
   StoreObjectFieldNoWriteBarrier(result, JSArray::kLengthOffset,
                                  smi_arguments_count);
   Node* arguments = nullptr;
   if (!empty) {
-    arguments = InnerAllocate(CAST(result), elements_offset);
+    arguments = InnerAllocate(result, elements_offset);
     StoreObjectFieldNoWriteBarrier(arguments, FixedArray::kLengthOffset,
                                    smi_arguments_count);
-    Node* fixed_array_map = LoadRoot(RootIndex::kFixedArrayMap);
+    TNode<Map> fixed_array_map = FixedArrayMapConstant();
     StoreMapNoWriteBarrier(arguments, fixed_array_map);
   }
   Node* parameter_map = nullptr;
@@ -63,8 +63,7 @@ ArgumentsBuiltinsAssembler::AllocateArgumentsObject(Node* map,
     parameter_map = InnerAllocate(CAST(arguments), parameter_map_offset);
     StoreObjectFieldNoWriteBarrier(result, JSArray::kElementsOffset,
                                    parameter_map);
-    Node* sloppy_elements_map =
-        LoadRoot(RootIndex::kSloppyArgumentsElementsMap);
+    TNode<Map> sloppy_elements_map = SloppyArgumentsElementsMapConstant();
     StoreMapNoWriteBarrier(parameter_map, sloppy_elements_map);
     parameter_map_count = ParameterToTagged(parameter_map_count, mode);
     StoreObjectFieldNoWriteBarrier(parameter_map, FixedArray::kLengthOffset,
@@ -94,16 +93,17 @@ Node* ArgumentsBuiltinsAssembler::ConstructParametersObjectFromArgs(
       AllocateArgumentsObject(map, rest_count, nullptr, param_mode, base_size);
   DCHECK_NULL(unused);
   CodeStubArguments arguments(this, arg_count, frame_ptr, param_mode);
-  VARIABLE(offset, MachineType::PointerRepresentation());
-  offset.Bind(IntPtrConstant(FixedArrayBase::kHeaderSize - kHeapObjectTag));
+  TVARIABLE(IntPtrT, offset,
+            IntPtrConstant(FixedArrayBase::kHeaderSize - kHeapObjectTag));
   VariableList list({&offset}, zone());
-  arguments.ForEach(list,
-                    [this, elements, &offset](Node* arg) {
-                      StoreNoWriteBarrier(MachineRepresentation::kTagged,
-                                          elements, offset.value(), arg);
-                      Increment(&offset, kTaggedSize);
-                    },
-                    first_arg, nullptr, param_mode);
+  arguments.ForEach(
+      list,
+      [&](Node* arg) {
+        StoreNoWriteBarrier(MachineRepresentation::kTagged, elements,
+                            offset.value(), arg);
+        Increment(&offset, kTaggedSize);
+      },
+      first_arg, nullptr, param_mode);
   return result;
 }
 
@@ -121,8 +121,8 @@ Node* ArgumentsBuiltinsAssembler::EmitFastNewRestParameter(Node* context,
 
   Node* rest_count =
       IntPtrOrSmiSub(info.argument_count, info.formal_parameter_count, mode);
-  Node* const native_context = LoadNativeContext(context);
-  Node* const array_map =
+  TNode<NativeContext> const native_context = LoadNativeContext(context);
+  TNode<Map> const array_map =
       LoadJSArrayElementsMap(PACKED_ELEMENTS, native_context);
   GotoIf(IntPtrOrSmiLessThanOrEqual(rest_count, zero, mode),
          &no_rest_parameters);
@@ -164,7 +164,7 @@ Node* ArgumentsBuiltinsAssembler::EmitFastNewStrictArguments(Node* context,
   Label done(this, &result), empty(this), runtime(this, Label::kDeferred);
 
   ParameterMode mode = OptimalParameterMode();
-  Node* zero = IntPtrOrSmiConstant(0, mode);
+  TNode<BInt> zero = BIntConstant(0);
 
   TorqueStructArgumentsInfo info = GetArgumentsFrameAndCount(
       CAST(context), UncheckedCast<JSFunction>(function));
@@ -173,10 +173,10 @@ Node* ArgumentsBuiltinsAssembler::EmitFastNewStrictArguments(Node* context,
       info.argument_count, &runtime,
       JSStrictArgumentsObject::kSize + FixedArray::kHeaderSize, mode);
 
-  Node* const native_context = LoadNativeContext(context);
-  Node* const map =
+  TNode<NativeContext> const native_context = LoadNativeContext(context);
+  TNode<Object> const map =
       LoadContextElement(native_context, Context::STRICT_ARGUMENTS_MAP_INDEX);
-  GotoIf(WordEqual(info.argument_count, zero), &empty);
+  GotoIf(BIntEqual(info.argument_count, zero), &empty);
 
   result.Bind(ConstructParametersObjectFromArgs(
       map, info.frame, info.argument_count, zero, info.argument_count, mode,
@@ -209,7 +209,7 @@ Node* ArgumentsBuiltinsAssembler::EmitFastNewSloppyArguments(Node* context,
   VARIABLE(result, MachineRepresentation::kTagged);
 
   ParameterMode mode = OptimalParameterMode();
-  Node* zero = IntPtrOrSmiConstant(0, mode);
+  TNode<BInt> zero = BIntConstant(0);
 
   Label done(this, &result), empty(this), no_parameters(this),
       runtime(this, Label::kDeferred);
@@ -217,28 +217,28 @@ Node* ArgumentsBuiltinsAssembler::EmitFastNewSloppyArguments(Node* context,
   TorqueStructArgumentsInfo info = GetArgumentsFrameAndCount(
       CAST(context), UncheckedCast<JSFunction>(function));
 
-  GotoIf(WordEqual(info.argument_count, zero), &empty);
+  GotoIf(BIntEqual(info.argument_count, zero), &empty);
 
-  GotoIf(WordEqual(info.formal_parameter_count, zero), &no_parameters);
+  GotoIf(BIntEqual(info.formal_parameter_count, zero), &no_parameters);
 
   {
     Comment("Mapped parameter JSSloppyArgumentsObject");
 
-    Node* mapped_count =
-        IntPtrOrSmiMin(info.argument_count, info.formal_parameter_count, mode);
+    TNode<BInt> mapped_count =
+        IntPtrOrSmiMin(info.argument_count, info.formal_parameter_count);
 
-    Node* parameter_map_size =
-        IntPtrOrSmiAdd(mapped_count, IntPtrOrSmiConstant(2, mode), mode);
+    TNode<BInt> parameter_map_size =
+        IntPtrOrSmiAdd(mapped_count, BIntConstant(2));
 
     // Verify that the overall allocation will fit in new space.
-    Node* elements_allocated =
-        IntPtrOrSmiAdd(info.argument_count, parameter_map_size, mode);
+    TNode<BInt> elements_allocated =
+        IntPtrOrSmiAdd(info.argument_count, parameter_map_size);
     GotoIfFixedArraySizeDoesntFitInNewSpace(
         elements_allocated, &runtime,
         JSSloppyArgumentsObject::kSize + FixedArray::kHeaderSize * 2, mode);
 
-    Node* const native_context = LoadNativeContext(context);
-    Node* const map = LoadContextElement(
+    TNode<NativeContext> const native_context = LoadNativeContext(context);
+    TNode<Object> const map = LoadContextElement(
         native_context, Context::FAST_ALIASED_ARGUMENTS_MAP_INDEX);
     Node* argument_object;
     Node* elements;
@@ -252,26 +252,27 @@ Node* ArgumentsBuiltinsAssembler::EmitFastNewSloppyArguments(Node* context,
     StoreFixedArrayElement(CAST(map_array), 1, elements, SKIP_WRITE_BARRIER);
 
     Comment("Fill in non-mapped parameters");
-    Node* argument_offset =
+    TNode<IntPtrT> argument_offset =
         ElementOffsetFromIndex(info.argument_count, PACKED_ELEMENTS, mode,
                                FixedArray::kHeaderSize - kHeapObjectTag);
-    Node* mapped_offset =
+    TNode<IntPtrT> mapped_offset =
         ElementOffsetFromIndex(mapped_count, PACKED_ELEMENTS, mode,
                                FixedArray::kHeaderSize - kHeapObjectTag);
     CodeStubArguments arguments(this, info.argument_count, info.frame, mode);
-    VARIABLE(current_argument, MachineType::PointerRepresentation());
-    current_argument.Bind(arguments.AtIndexPtr(info.argument_count, mode));
+    TVARIABLE(IntPtrT, current_argument,
+              Signed(arguments.AtIndexPtr(info.argument_count, mode)));
     VariableList var_list1({&current_argument}, zone());
-    mapped_offset = BuildFastLoop(
+    mapped_offset = BuildFastLoop<IntPtrT>(
         var_list1, argument_offset, mapped_offset,
-        [this, elements, &current_argument](Node* offset) {
+        [&](TNode<IntPtrT> offset) {
           Increment(&current_argument, kSystemPointerSize);
-          Node* arg = LoadBufferObject(
-              UncheckedCast<RawPtrT>(current_argument.value()), 0);
+          TNode<Object> arg = LoadBufferObject(
+              ReinterpretCast<RawPtrT>(current_argument.value()), 0);
           StoreNoWriteBarrier(MachineRepresentation::kTagged, elements, offset,
                               arg);
+          return;
         },
-        -kTaggedSize, INTPTR_PARAMETERS);
+        -kTaggedSize);
 
     // Copy the parameter slots and the holes in the arguments.
     // We need to fill in mapped_count slots. They index the context,
@@ -282,30 +283,30 @@ Node* ArgumentsBuiltinsAssembler::EmitFastNewSloppyArguments(Node* context,
     //       MIN_CONTEXT_SLOTS+argument_count-mapped_count
     // We loop from right to left.
     Comment("Fill in mapped parameters");
-    VARIABLE(context_index, OptimalParameterRepresentation());
-    context_index.Bind(IntPtrOrSmiSub(
-        IntPtrOrSmiAdd(IntPtrOrSmiConstant(Context::MIN_CONTEXT_SLOTS, mode),
-                       info.formal_parameter_count, mode),
-        mapped_count, mode));
-    Node* the_hole = TheHoleConstant();
+    TVARIABLE(
+        BInt, context_index,
+        IntPtrOrSmiSub(IntPtrOrSmiAdd(BIntConstant(Context::MIN_CONTEXT_SLOTS),
+                                      info.formal_parameter_count),
+                       mapped_count));
+    TNode<Oddball> the_hole = TheHoleConstant();
     VariableList var_list2({&context_index}, zone());
     const int kParameterMapHeaderSize = FixedArray::OffsetOfElementAt(2);
-    Node* adjusted_map_array = IntPtrAdd(
+    TNode<IntPtrT> adjusted_map_array = IntPtrAdd(
         BitcastTaggedToWord(map_array),
         IntPtrConstant(kParameterMapHeaderSize - FixedArray::kHeaderSize));
-    Node* zero_offset = ElementOffsetFromIndex(
+    TNode<IntPtrT> zero_offset = ElementOffsetFromIndex(
         zero, PACKED_ELEMENTS, mode, FixedArray::kHeaderSize - kHeapObjectTag);
-    BuildFastLoop(
+    BuildFastLoop<IntPtrT>(
         var_list2, mapped_offset, zero_offset,
-        [=, &context_index](Node* offset) {
+        [&](TNode<IntPtrT> offset) {
           StoreNoWriteBarrier(MachineRepresentation::kTagged, elements, offset,
                               the_hole);
           StoreNoWriteBarrier(MachineRepresentation::kTagged,
                               adjusted_map_array, offset,
-                              ParameterToTagged(context_index.value(), mode));
-          Increment(&context_index, 1, mode);
+                              BIntToSmi(context_index.value()));
+          Increment(&context_index);
         },
-        -kTaggedSize, INTPTR_PARAMETERS);
+        -kTaggedSize);
 
     result.Bind(argument_object);
     Goto(&done);
@@ -317,8 +318,8 @@ Node* ArgumentsBuiltinsAssembler::EmitFastNewSloppyArguments(Node* context,
     GotoIfFixedArraySizeDoesntFitInNewSpace(
         info.argument_count, &runtime,
         JSSloppyArgumentsObject::kSize + FixedArray::kHeaderSize, mode);
-    Node* const native_context = LoadNativeContext(context);
-    Node* const map =
+    TNode<NativeContext> const native_context = LoadNativeContext(context);
+    TNode<Object> const map =
         LoadContextElement(native_context, Context::SLOPPY_ARGUMENTS_MAP_INDEX);
     result.Bind(ConstructParametersObjectFromArgs(
         map, info.frame, info.argument_count, zero, info.argument_count, mode,
@@ -331,8 +332,8 @@ Node* ArgumentsBuiltinsAssembler::EmitFastNewSloppyArguments(Node* context,
   BIND(&empty);
   {
     Comment("Empty JSSloppyArgumentsObject");
-    Node* const native_context = LoadNativeContext(context);
-    Node* const map =
+    TNode<NativeContext> const native_context = LoadNativeContext(context);
+    TNode<Object> const map =
         LoadContextElement(native_context, Context::SLOPPY_ARGUMENTS_MAP_INDEX);
     Node* arguments;
     Node* elements;

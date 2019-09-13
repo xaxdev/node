@@ -21,10 +21,6 @@ void JumpTableAssembler::EmitLazyCompileJumpSlot(uint32_t func_index,
   EmitJumpSlot(lazy_compile_target);  // 5 bytes
 }
 
-void JumpTableAssembler::EmitRuntimeStubSlot(Address builtin_target) {
-  JumpToInstructionStream(builtin_target);
-}
-
 void JumpTableAssembler::EmitJumpSlot(Address target) {
   // On x64, all code is allocated within a single code section, so we can use
   // relative jumps.
@@ -32,6 +28,18 @@ void JumpTableAssembler::EmitJumpSlot(Address target) {
   intptr_t displacement = static_cast<intptr_t>(
       reinterpret_cast<byte*>(target) - pc_ - kNearJmpInstrSize);
   near_jmp(displacement, RelocInfo::NONE);
+}
+
+void JumpTableAssembler::EmitFarJumpSlot(Address target) {
+  Label data;
+  int start_offset = pc_offset();
+  jmp(Operand(&data));  // 6 bytes
+  Nop(2);               // 2 bytes
+  // The data must be properly aligned, so it can be patched atomically.
+  DCHECK_EQ(start_offset + 8, pc_offset());
+  USE(start_offset);
+  bind(&data);
+  dq(target);  // 8 bytes
 }
 
 void JumpTableAssembler::NopBytes(int bytes) {
@@ -46,11 +54,11 @@ void JumpTableAssembler::EmitLazyCompileJumpSlot(uint32_t func_index,
   jmp(lazy_compile_target, RelocInfo::NONE);           // 5 bytes
 }
 
-void JumpTableAssembler::EmitRuntimeStubSlot(Address builtin_target) {
-  JumpToInstructionStream(builtin_target);
+void JumpTableAssembler::EmitJumpSlot(Address target) {
+  jmp(target, RelocInfo::NONE);
 }
 
-void JumpTableAssembler::EmitJumpSlot(Address target) {
+void JumpTableAssembler::EmitFarJumpSlot(Address target) {
   jmp(target, RelocInfo::NONE);
 }
 
@@ -74,16 +82,20 @@ void JumpTableAssembler::EmitLazyCompileJumpSlot(uint32_t func_index,
   EmitJumpSlot(lazy_compile_target);
 }
 
-void JumpTableAssembler::EmitRuntimeStubSlot(Address builtin_target) {
-  JumpToInstructionStream(builtin_target);
-  CheckConstPool(true, false);  // force emit of const pool
-}
-
 void JumpTableAssembler::EmitJumpSlot(Address target) {
   // Note that {Move32BitImmediate} emits [ldr, constant] for the relocation
   // mode used below, we need this to allow concurrent patching of this slot.
   Move32BitImmediate(pc, Operand(target, RelocInfo::WASM_CALL));
   CheckConstPool(true, false);  // force emit of const pool
+}
+
+void JumpTableAssembler::EmitFarJumpSlot(Address target) {
+  // Load from [pc + kInstrSize] to pc. Note that {pc} points two instructions
+  // after the currently executing one.
+  ldr_pcrel(pc, -kInstrSize);  // 1 instruction
+  dd(target);                  // 4 bytes (== 1 instruction)
+  STATIC_ASSERT(kInstrSize == kInt32Size);
+  STATIC_ASSERT(kFarJumpTableSlotSize == 2 * kInstrSize);
 }
 
 void JumpTableAssembler::NopBytes(int bytes) {
@@ -105,19 +117,29 @@ void JumpTableAssembler::EmitLazyCompileJumpSlot(uint32_t func_index,
   if (nop_bytes) nop();
 }
 
-void JumpTableAssembler::EmitRuntimeStubSlot(Address builtin_target) {
-  JumpToInstructionStream(builtin_target);
-  ForceConstantPoolEmissionWithoutJump();
-}
-
 void JumpTableAssembler::EmitJumpSlot(Address target) {
   // TODO(wasm): Currently this is guaranteed to be a {near_call} and hence is
   // patchable concurrently. Once {kMaxWasmCodeMemory} is raised on ARM64, make
   // sure concurrent patching is still supported.
   DCHECK(TurboAssembler::IsNearCallOffset(
       (reinterpret_cast<byte*>(target) - pc_) / kInstrSize));
-
   Jump(target, RelocInfo::NONE);
+}
+
+void JumpTableAssembler::EmitFarJumpSlot(Address target) {
+  // This code uses hard-coded registers and instructions (and avoids
+  // {UseScratchRegisterScope} or {InstructionAccurateScope}) because this code
+  // will only be called for the very specific runtime slot table, and we want
+  // to have maximum control over the generated code.
+  // Do not reuse this code without validating that the same assumptions hold.
+  constexpr Register kTmpReg = x16;
+  DCHECK(TmpList()->IncludesAliasOf(kTmpReg));
+  // Load from [pc + 2 * kInstrSize] to {kTmpReg}, then branch there.
+  ldr_pcrel(kTmpReg, 2);  // 1 instruction
+  br(kTmpReg);            // 1 instruction
+  dq(target);             // 8 bytes (== 2 instructions)
+  STATIC_ASSERT(kInstrSize == kInt32Size);
+  STATIC_ASSERT(kFarJumpTableSlotSize == 4 * kInstrSize);
 }
 
 void JumpTableAssembler::NopBytes(int bytes) {
@@ -138,13 +160,13 @@ void JumpTableAssembler::EmitLazyCompileJumpSlot(uint32_t func_index,
   b(r1);  // 2 bytes
 }
 
-void JumpTableAssembler::EmitRuntimeStubSlot(Address builtin_target) {
-  JumpToInstructionStream(builtin_target);
-}
-
 void JumpTableAssembler::EmitJumpSlot(Address target) {
   mov(r1, Operand(target));
   b(r1);
+}
+
+void JumpTableAssembler::EmitFarJumpSlot(Address target) {
+  JumpToInstructionStream(target);
 }
 
 void JumpTableAssembler::NopBytes(int bytes) {
@@ -168,12 +190,12 @@ void JumpTableAssembler::EmitLazyCompileJumpSlot(uint32_t func_index,
   for (int i = 0; i < nop_bytes; i += kInstrSize) nop();
 }
 
-void JumpTableAssembler::EmitRuntimeStubSlot(Address builtin_target) {
-  JumpToInstructionStream(builtin_target);
-}
-
 void JumpTableAssembler::EmitJumpSlot(Address target) {
   Jump(target, RelocInfo::NONE);
+}
+
+void JumpTableAssembler::EmitFarJumpSlot(Address target) {
+  JumpToInstructionStream(target);
 }
 
 void JumpTableAssembler::NopBytes(int bytes) {
@@ -199,14 +221,14 @@ void JumpTableAssembler::EmitLazyCompileJumpSlot(uint32_t func_index,
   for (int i = 0; i < nop_bytes; i += kInstrSize) nop();
 }
 
-void JumpTableAssembler::EmitRuntimeStubSlot(Address builtin_target) {
-  JumpToInstructionStream(builtin_target);
-}
-
 void JumpTableAssembler::EmitJumpSlot(Address target) {
   mov(r0, Operand(target));
   mtctr(r0);
   bctr();
+}
+
+void JumpTableAssembler::EmitFarJumpSlot(Address target) {
+  JumpToInstructionStream(target);
 }
 
 void JumpTableAssembler::NopBytes(int bytes) {
@@ -218,21 +240,7 @@ void JumpTableAssembler::NopBytes(int bytes) {
 }
 
 #else
-void JumpTableAssembler::EmitLazyCompileJumpSlot(uint32_t func_index,
-                                                 Address lazy_compile_target) {
-  UNIMPLEMENTED();
-}
-
-void JumpTableAssembler::EmitRuntimeStubSlot(Address builtin_target) {
-  UNIMPLEMENTED();
-}
-
-void JumpTableAssembler::EmitJumpSlot(Address target) { UNIMPLEMENTED(); }
-
-void JumpTableAssembler::NopBytes(int bytes) {
-  DCHECK_LE(0, bytes);
-  UNIMPLEMENTED();
-}
+#error Unknown architecture.
 #endif
 
 }  // namespace wasm
