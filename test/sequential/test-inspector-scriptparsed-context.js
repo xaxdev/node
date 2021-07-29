@@ -1,4 +1,3 @@
-// Flags: --expose-internals
 'use strict';
 const common = require('../common');
 common.skipIfInspectorDisabled();
@@ -49,7 +48,7 @@ async function runTests() {
   const session = await instance.connectInspectorSession();
   await session.send([
     { 'method': 'Debugger.enable' },
-    { 'method': 'Runtime.runIfWaitingForDebugger' }
+    { 'method': 'Runtime.runIfWaitingForDebugger' },
   ]);
   await session.waitForBreakOnLine(2, '[eval]');
 
@@ -84,4 +83,4 @@ async function runTests() {
   assert.strictEqual((await instance.expectShutdown()).exitCode, 0);
 }
 
-runTests();
+runTests().then(common.mustCall());

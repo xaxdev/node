@@ -74,7 +74,7 @@ static void sv_send_cb(uv_udp_send_t* req, int status) {
 static int do_send(uv_udp_send_t* send_req) {
   uv_buf_t buf;
   struct sockaddr_in addr;
-
+  
   buf = uv_buf_init("PING", 4);
 
   ASSERT(0 == uv_ip4_addr(MULTICAST_ADDR, TEST_PORT, &addr));
@@ -126,8 +126,10 @@ static void cl_recv_cb(uv_udp_t* handle,
     r = uv_udp_set_membership(&server, MULTICAST_ADDR, NULL, UV_LEAVE_GROUP);
     ASSERT(r == 0);
 
+#if !defined(__OpenBSD__) && !defined(__NetBSD__)
     r = uv_udp_set_source_membership(&server, MULTICAST_ADDR, NULL, source_addr, UV_JOIN_GROUP);
     ASSERT(r == 0);
+#endif
 
     r = do_send(&req_ss);
     ASSERT(r == 0);

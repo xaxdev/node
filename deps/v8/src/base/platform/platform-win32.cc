@@ -30,7 +30,7 @@
 #include <VersionHelpers.h>
 
 #if defined(_MSC_VER)
-#include <crtdbg.h>  // NOLINT
+#include <crtdbg.h>
 #endif               // defined(_MSC_VER)
 
 // Extra functions for MinGW. Most of these are the _s functions which are in
@@ -502,11 +502,15 @@ int OS::GetCurrentThreadId() {
 }
 
 void OS::ExitProcess(int exit_code) {
-  // Use TerminateProcess avoid races between isolate threads and
+  // Use TerminateProcess to avoid races between isolate threads and
   // static destructors.
   fflush(stdout);
   fflush(stderr);
   TerminateProcess(GetCurrentProcess(), exit_code);
+  // Termination the current process does not return. {TerminateProcess} is not
+  // marked [[noreturn]] though, since it can also be used to terminate another
+  // process.
+  UNREACHABLE();
 }
 
 // ----------------------------------------------------------------------------
@@ -603,8 +607,7 @@ FILE* OS::OpenTemporaryFile() {
 
 
 // Open log file in binary mode to avoid /n -> /r/n conversion.
-const char* const OS::LogFileOpenMode = "wb";
-
+const char* const OS::LogFileOpenMode = "wb+";
 
 // Print (debug) message to console.
 void OS::Print(const char* format, ...) {
@@ -753,6 +756,7 @@ namespace {
 DWORD GetProtectionFromMemoryPermission(OS::MemoryPermission access) {
   switch (access) {
     case OS::MemoryPermission::kNoAccess:
+    case OS::MemoryPermission::kNoAccessWillJitLater:
       return PAGE_NOACCESS;
     case OS::MemoryPermission::kRead:
       return PAGE_READONLY;
@@ -798,13 +802,13 @@ uint8_t* RandomizedVirtualAlloc(size_t size, DWORD flags, DWORD protect,
 }  // namespace
 
 // static
-void* OS::Allocate(void* address, size_t size, size_t alignment,
+void* OS::Allocate(void* hint, size_t size, size_t alignment,
                    MemoryPermission access) {
   size_t page_size = AllocatePageSize();
   DCHECK_EQ(0, size % page_size);
   DCHECK_EQ(0, alignment % page_size);
   DCHECK_LE(page_size, alignment);
-  address = AlignedAddress(address, alignment);
+  hint = AlignedAddress(hint, alignment);
 
   DWORD flags = (access == OS::MemoryPermission::kNoAccess)
                     ? MEM_RESERVE
@@ -812,7 +816,7 @@ void* OS::Allocate(void* address, size_t size, size_t alignment,
   DWORD protect = GetProtectionFromMemoryPermission(access);
 
   // First, try an exact size aligned allocation.
-  uint8_t* base = RandomizedVirtualAlloc(size, flags, protect, address);
+  uint8_t* base = RandomizedVirtualAlloc(size, flags, protect, hint);
   if (base == nullptr) return nullptr;  // Can't allocate, we're OOM.
 
   // If address is suitably aligned, we're done.
@@ -824,7 +828,7 @@ void* OS::Allocate(void* address, size_t size, size_t alignment,
   CHECK(Free(base, size));
 
   // Clear the hint. It's unlikely we can allocate at this address.
-  address = nullptr;
+  hint = nullptr;
 
   // Add the maximum misalignment so we are guaranteed an aligned base address
   // in the allocated region.
@@ -832,7 +836,7 @@ void* OS::Allocate(void* address, size_t size, size_t alignment,
   const int kMaxAttempts = 3;
   aligned_base = nullptr;
   for (int i = 0; i < kMaxAttempts; ++i) {
-    base = RandomizedVirtualAlloc(padded_size, flags, protect, address);
+    base = RandomizedVirtualAlloc(padded_size, flags, protect, hint);
     if (base == nullptr) return nullptr;  // Can't allocate, we're OOM.
 
     // Try to trim the allocation by freeing the padded allocation and then
@@ -925,7 +929,7 @@ void OS::Abort() {
   fflush(stderr);
 
   if (g_hard_abort) {
-    V8_IMMEDIATE_CRASH();
+    IMMEDIATE_CRASH();
   }
   // Make the MSVCRT do a silent abort.
   raise(SIGABRT);
@@ -1352,12 +1356,12 @@ Thread::~Thread() {
 // Create a new thread. It is important to use _beginthreadex() instead of
 // the Win32 function CreateThread(), because the CreateThread() does not
 // initialize thread specific structures in the C runtime library.
-void Thread::Start() {
-  data_->thread_ = reinterpret_cast<HANDLE>(
-      _beginthreadex(nullptr, static_cast<unsigned>(stack_size_), ThreadEntry,
-                     this, 0, &data_->thread_id_));
+bool Thread::Start() {
+  uintptr_t result = _beginthreadex(nullptr, static_cast<unsigned>(stack_size_),
+                                    ThreadEntry, this, 0, &data_->thread_id_);
+  data_->thread_ = reinterpret_cast<HANDLE>(result);
+  return result != 0;
 }
-
 
 // Wait for thread to terminate.
 void Thread::Join() {
@@ -1393,6 +1397,34 @@ void Thread::SetThreadLocal(LocalStorageKey key, void* value) {
 }
 
 void OS::AdjustSchedulingParams() {}
+
+// static
+Stack::StackSlot Stack::GetStackStart() {
+#if defined(V8_TARGET_ARCH_X64)
+  return reinterpret_cast<void*>(
+      reinterpret_cast<NT_TIB64*>(NtCurrentTeb())->StackBase);
+#elif defined(V8_TARGET_ARCH_32_BIT)
+  return reinterpret_cast<void*>(
+      reinterpret_cast<NT_TIB*>(NtCurrentTeb())->StackBase);
+#elif defined(V8_TARGET_ARCH_ARM64)
+  // Windows 8 and later, see
+  // https://docs.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getcurrentthreadstacklimits
+  ULONG_PTR lowLimit, highLimit;
+  ::GetCurrentThreadStackLimits(&lowLimit, &highLimit);
+  return reinterpret_cast<void*>(highLimit);
+#else
+#error Unsupported GetStackStart.
+#endif
+}
+
+// static
+Stack::StackSlot Stack::GetCurrentStackPosition() {
+#if V8_CC_MSVC
+  return _AddressOfReturnAddress();
+#else
+  return __builtin_frame_address(0);
+#endif
+}
 
 }  // namespace base
 }  // namespace v8

@@ -81,7 +81,7 @@ class ConstantPoolEntry {
   enum { SHARING_PROHIBITED = -2, SHARING_ALLOWED = -1 };
 };
 
-#if defined(V8_TARGET_ARCH_PPC)
+#if defined(V8_TARGET_ARCH_PPC) || defined(V8_TARGET_ARCH_PPC64)
 
 // -----------------------------------------------------------------------------
 // Embedded constant pool support
@@ -102,13 +102,13 @@ class ConstantPoolBuilder {
   ConstantPoolEntry::Access AddEntry(int position, intptr_t value,
                                      bool sharing_ok) {
     ConstantPoolEntry entry(position, value, sharing_ok);
-    return AddEntry(entry, ConstantPoolEntry::INTPTR);
+    return AddEntry(&entry, ConstantPoolEntry::INTPTR);
   }
 
   // Add double constant to the embedded constant pool
   ConstantPoolEntry::Access AddEntry(int position, Double value) {
     ConstantPoolEntry entry(position, value);
-    return AddEntry(entry, ConstantPoolEntry::DOUBLE);
+    return AddEntry(&entry, ConstantPoolEntry::DOUBLE);
   }
 
   // Add double constant to the embedded constant pool
@@ -138,9 +138,8 @@ class ConstantPoolBuilder {
   inline Label* EmittedPosition() { return &emitted_label_; }
 
  private:
-  ConstantPoolEntry::Access AddEntry(
-      ConstantPoolEntry& entry,  // NOLINT(runtime/references)
-      ConstantPoolEntry::Type type);
+  ConstantPoolEntry::Access AddEntry(ConstantPoolEntry* entry,
+                                     ConstantPoolEntry::Type type);
   void EmitSharedEntries(Assembler* assm, ConstantPoolEntry::Type type);
   void EmitGroup(Assembler* assm, ConstantPoolEntry::Access access,
                  ConstantPoolEntry::Type type);
@@ -162,9 +161,9 @@ class ConstantPoolBuilder {
   PerTypeEntryInfo info_[ConstantPoolEntry::NUMBER_OF_TYPES];
 };
 
-#endif  // defined(V8_TARGET_ARCH_PPC)
+#endif  // defined(V8_TARGET_ARCH_PPC) || defined(V8_TARGET_ARCH_PPC64)
 
-#if defined(V8_TARGET_ARCH_ARM64)
+#if defined(V8_TARGET_ARCH_ARM64) || defined(V8_TARGET_ARCH_RISCV64)
 
 class ConstantPoolKey {
  public:
@@ -283,7 +282,7 @@ class ConstantPool {
   void SetNextCheckIn(size_t instructions);
 
   // Class for scoping postponing the constant pool generation.
-  class V8_EXPORT_PRIVATE BlockScope {
+  class V8_EXPORT_PRIVATE V8_NODISCARD BlockScope {
    public:
     // BlockScope immediatelly emits the pool if necessary to ensure that
     // during the block scope at least {margin} bytes can be emitted without

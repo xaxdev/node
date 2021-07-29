@@ -36,7 +36,6 @@ const crypto = require('crypto');
 const fs = require('fs');
 const tls = require('tls');
 const fixtures = require('../common/fixtures');
-const DH_NOT_SUITABLE_GENERATOR = crypto.constants.DH_NOT_SUITABLE_GENERATOR;
 
 require('internal/crypto/util').setDefaultEncoding('latin1');
 
@@ -215,7 +214,7 @@ assert.throws(function() {
             '20cdc944b6022cac3c4982b10d5eeb55c3e4de15134676fb6de04460' +
             '65c97440fa8c6a58'
       }
-    }
+    },
   ];
 
   for (const testCase of rfc4231) {
@@ -287,7 +286,7 @@ assert.throws(function() {
           'Test Using Larger Than Block-Size Key and Larger Than One ' +
           'Block-Size Data',
       hmac: '6f630fad67cda0ee1fb1f562db3aa53e'
-    }
+    },
   ];
   const rfc2202_sha1 = [
     {
@@ -341,7 +340,7 @@ assert.throws(function() {
           'Test Using Larger Than Block-Size Key and Larger Than One ' +
           'Block-Size Data',
       hmac: 'e8e99d0f45237d786d6bbaa7965c7808bbff1a91'
-    }
+    },
   ];
 
   if (!common.hasFipsCrypto) {
@@ -573,18 +572,19 @@ testCipher4(Buffer.from('0123456789abcd0123456789'), Buffer.from('12345678'));
 
 
 // update() should only take buffers / strings
-common.expectsError(
+assert.throws(
   () => crypto.createHash('sha1').update({ foo: 'bar' }),
   {
     code: 'ERR_INVALID_ARG_TYPE',
-    type: TypeError
+    name: 'TypeError'
   });
 
 
 // Test Diffie-Hellman with two parties sharing a secret,
 // using various encodings as we go along
 {
-  const dh1 = crypto.createDiffieHellman(common.hasFipsCrypto ? 1024 : 256);
+  const size = common.hasFipsCrypto || common.hasOpenSSL3 ? 1024 : 256;
+  const dh1 = crypto.createDiffieHellman(size);
   const p1 = dh1.getPrime('buffer');
   const dh2 = crypto.createDiffieHellman(p1, 'base64');
   const key1 = dh1.generateKeys();
@@ -615,8 +615,7 @@ common.expectsError(
             '020BBEA63B139B22514A08798E3404DDEF9519B3CD3A431B302B0A6DF25F1437' +
             '4FE1356D6D51C245E485B576625E7EC6F44C42E9A637ED6B0BFF5CB6F406B7ED' +
             'EE386BFB5A899FA5AE9F24117C4B1FE649286651ECE65381FFFFFFFFFFFFFFFF';
-  const d = crypto.createDiffieHellman(p, 'hex');
-  assert.strictEqual(d.verifyError, DH_NOT_SUITABLE_GENERATOR);
+  crypto.createDiffieHellman(p, 'hex');
 
   // Test RSA key signing/verification
   const rsaSign = crypto.createSign('SHA1');

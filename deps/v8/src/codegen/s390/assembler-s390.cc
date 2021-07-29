@@ -35,7 +35,6 @@
 // Copyright 2014 the V8 project authors. All rights reserved.
 
 #include "src/codegen/s390/assembler-s390.h"
-#include <sys/auxv.h>
 #include <set>
 #include <string>
 
@@ -43,6 +42,7 @@
 
 #if V8_HOST_ARCH_S390
 #include <elf.h>  // Required for auxv checks for STFLE support
+#include <sys/auxv.h>
 #endif
 
 #include "src/base/bits.h"
@@ -159,6 +159,14 @@ static bool supportsSTFLE() {
 #endif
 }
 
+bool CpuFeatures::SupportsWasmSimd128() {
+#if V8_ENABLE_WEBASSEMBLY
+  return CpuFeatures::IsSupported(VECTOR_ENHANCE_FACILITY_1);
+#else
+  return false;
+#endif  // V8_ENABLE_WEBASSEMBLY
+}
+
 void CpuFeatures::ProbeImpl(bool cross_compile) {
   supported_ |= CpuFeaturesImpliedByCompiler();
   icache_line_size_ = 256;
@@ -218,6 +226,11 @@ void CpuFeatures::ProbeImpl(bool cross_compile) {
         supportsCPUFeature("vx")) {
       supported_ |= (1u << VECTOR_ENHANCE_FACILITY_1);
     }
+    // Test for Vector Enhancement Facility 2 - Bit 148
+    if (facilities[2] & (one << (63 - (148 - 128))) &&
+        supportsCPUFeature("vx")) {
+      supported_ |= (1u << VECTOR_ENHANCE_FACILITY_2);
+    }
     // Test for Miscellaneous Instruction Extension Facility - Bit 58
     if (facilities[0] & (1lu << (63 - 58))) {
       supported_ |= (1u << MISC_INSTR_EXT2);
@@ -236,6 +249,12 @@ void CpuFeatures::ProbeImpl(bool cross_compile) {
   supported_ |= (1u << VECTOR_ENHANCE_FACILITY_1);
 #endif
   supported_ |= (1u << FPU);
+
+  // Set a static value on whether Simd is supported.
+  // This variable is only used for certain archs to query SupportWasmSimd128()
+  // at runtime in builtins using an extern ref. Other callers should use
+  // CpuFeatures::SupportWasmSimd128().
+  CpuFeatures::supports_wasm_simd_128_ = CpuFeatures::SupportsWasmSimd128();
 }
 
 void CpuFeatures::PrintTarget() {
@@ -256,6 +275,10 @@ void CpuFeatures::PrintFeatures() {
   PrintF("GENERAL_INSTR=%d\n", CpuFeatures::IsSupported(GENERAL_INSTR_EXT));
   PrintF("DISTINCT_OPS=%d\n", CpuFeatures::IsSupported(DISTINCT_OPS));
   PrintF("VECTOR_FACILITY=%d\n", CpuFeatures::IsSupported(VECTOR_FACILITY));
+  PrintF("VECTOR_ENHANCE_FACILITY_1=%d\n",
+         CpuFeatures::IsSupported(VECTOR_ENHANCE_FACILITY_1));
+  PrintF("VECTOR_ENHANCE_FACILITY_2=%d\n",
+         CpuFeatures::IsSupported(VECTOR_ENHANCE_FACILITY_2));
   PrintF("MISC_INSTR_EXT2=%d\n", CpuFeatures::IsSupported(MISC_INSTR_EXT2));
 }
 
@@ -329,8 +352,8 @@ void Assembler::AllocateAndInstallRequestedHeapObjects(Isolate* isolate) {
     Address pc = reinterpret_cast<Address>(buffer_start_) + request.offset();
     switch (request.kind()) {
       case HeapObjectRequest::kHeapNumber: {
-        object = isolate->factory()->NewHeapNumber(request.heap_number(),
-                                                   AllocationType::kOld);
+        object = isolate->factory()->NewHeapNumber<AllocationType::kOld>(
+            request.heap_number());
         set_target_address_at(pc, kNullAddress, object.address(),
                               SKIP_ICACHE_FLUSH);
         break;
@@ -361,6 +384,15 @@ Assembler::Assembler(const AssemblerOptions& options,
 void Assembler::GetCode(Isolate* isolate, CodeDesc* desc,
                         SafepointTableBuilder* safepoint_table_builder,
                         int handler_table_offset) {
+  // As a crutch to avoid having to add manual Align calls wherever we use a
+  // raw workflow to create Code objects (mostly in tests), add another Align
+  // call here. It does no harm - the end of the Code object is aligned to the
+  // (larger) kCodeAlignment anyways.
+  // TODO(jgruber): Consider moving responsibility for proper alignment to
+  // metadata table builders (safepoint, handler, constant pool, code
+  // comments).
+  DataAlign(Code::kMetadataAlignment);
+
   EmitRelocations();
 
   int code_comments_size = WriteCodeComments();
@@ -571,16 +603,6 @@ void Assembler::next(Label* L) {
   }
 }
 
-bool Assembler::is_near(Label* L, Condition cond) {
-  DCHECK(L->is_bound());
-  if (L->is_bound() == false) return false;
-
-  int maxReach = ((cond == al) ? 26 : 16);
-  int offset = L->pos() - pc_offset();
-
-  return is_intn(offset, maxReach);
-}
-
 int Assembler::link(Label* L) {
   int position;
   if (L->is_bound()) {
@@ -625,9 +647,10 @@ void Assembler::load_label_offset(Register r1, Label* L) {
 }
 
 // Pseudo op - branch on condition
-void Assembler::branchOnCond(Condition c, int branch_offset, bool is_bound) {
+void Assembler::branchOnCond(Condition c, int branch_offset, bool is_bound,
+                             bool force_long_branch) {
   int offset_in_halfwords = branch_offset / 2;
-  if (is_bound && is_int16(offset_in_halfwords)) {
+  if (is_bound && is_int16(offset_in_halfwords) && !force_long_branch) {
     brc(c, Operand(offset_in_halfwords));  // short jump
   } else {
     brcl(c, Operand(offset_in_halfwords));  // long jump
@@ -772,20 +795,32 @@ void Assembler::db(uint8_t data) {
   pc_ += sizeof(uint8_t);
 }
 
-void Assembler::dd(uint32_t data) {
+void Assembler::dd(uint32_t data, RelocInfo::Mode rmode) {
   CheckBuffer();
+  if (!RelocInfo::IsNone(rmode)) {
+    DCHECK(RelocInfo::IsDataEmbeddedObject(rmode));
+    RecordRelocInfo(rmode);
+  }
   *reinterpret_cast<uint32_t*>(pc_) = data;
   pc_ += sizeof(uint32_t);
 }
 
-void Assembler::dq(uint64_t value) {
+void Assembler::dq(uint64_t value, RelocInfo::Mode rmode) {
   CheckBuffer();
+  if (!RelocInfo::IsNone(rmode)) {
+    DCHECK(RelocInfo::IsDataEmbeddedObject(rmode));
+    RecordRelocInfo(rmode);
+  }
   *reinterpret_cast<uint64_t*>(pc_) = value;
   pc_ += sizeof(uint64_t);
 }
 
-void Assembler::dp(uintptr_t data) {
+void Assembler::dp(uintptr_t data, RelocInfo::Mode rmode) {
   CheckBuffer();
+  if (!RelocInfo::IsNone(rmode)) {
+    DCHECK(RelocInfo::IsDataEmbeddedObject(rmode));
+    RecordRelocInfo(rmode);
+  }
   *reinterpret_cast<uintptr_t*>(pc_) = data;
   pc_ += sizeof(uintptr_t);
 }

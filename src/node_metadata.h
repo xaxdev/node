@@ -6,6 +6,10 @@
 #include <string>
 #include "node_version.h"
 
+#if HAVE_OPENSSL
+#include <openssl/crypto.h>
+#endif  // HAVE_OPENSSL
+
 namespace node {
 
 // if this is a release build and no explicit base has been set
@@ -31,7 +35,6 @@ namespace node {
   V(nghttp2)                                                                   \
   V(napi)                                                                      \
   V(llhttp)                                                                    \
-  V(http_parser)                                                               \
 
 #if HAVE_OPENSSL
 #define NODE_VERSIONS_KEY_CRYPTO(V) V(openssl)
@@ -49,10 +52,19 @@ namespace node {
 #define NODE_VERSIONS_KEY_INTL(V)
 #endif  // NODE_HAVE_I18N_SUPPORT
 
+#ifdef OPENSSL_INFO_QUIC
+#define NODE_VERSIONS_KEY_QUIC(V)                                             \
+  V(ngtcp2)                                                                   \
+  V(nghttp3)
+#else
+#define NODE_VERSIONS_KEY_QUIC(V)
+#endif
+
 #define NODE_VERSIONS_KEYS(V)                                                  \
   NODE_VERSIONS_KEYS_BASE(V)                                                   \
   NODE_VERSIONS_KEY_CRYPTO(V)                                                  \
-  NODE_VERSIONS_KEY_INTL(V)
+  NODE_VERSIONS_KEY_INTL(V)                                                    \
+  NODE_VERSIONS_KEY_QUIC(V)
 
 class Metadata {
  public:
@@ -102,8 +114,6 @@ class Metadata {
 // Per-process global
 namespace per_process {
 extern Metadata metadata;
-extern const char* const llhttp_version;
-extern const char* const http_parser_version;
 }
 
 }  // namespace node

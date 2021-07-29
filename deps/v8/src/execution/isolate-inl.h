@@ -7,18 +7,17 @@
 
 #include "src/execution/isolate.h"
 #include "src/objects/cell-inl.h"
+#include "src/objects/contexts-inl.h"
+#include "src/objects/js-function.h"
 #include "src/objects/objects-inl.h"
 #include "src/objects/oddball.h"
 #include "src/objects/property-cell.h"
 #include "src/objects/regexp-match-info.h"
 #include "src/objects/shared-function-info.h"
+#include "src/objects/source-text-module-inl.h"
 
 namespace v8 {
 namespace internal {
-
-IsolateAllocationMode Isolate::isolate_allocation_mode() {
-  return isolate_allocator_->mode();
-}
 
 void Isolate::set_context(Context context) {
   DCHECK(context.is_null() || context.IsContext());
@@ -26,10 +25,12 @@ void Isolate::set_context(Context context) {
 }
 
 Handle<NativeContext> Isolate::native_context() {
+  DCHECK(!context().is_null());
   return handle(context().native_context(), this);
 }
 
 NativeContext Isolate::raw_native_context() {
+  DCHECK(!context().is_null());
   return context().native_context();
 }
 
@@ -81,6 +82,18 @@ bool Isolate::is_catchable_by_javascript(Object exception) {
   return exception != ReadOnlyRoots(heap()).termination_exception();
 }
 
+bool Isolate::is_catchable_by_wasm(Object exception) {
+  if (!is_catchable_by_javascript(exception)) return false;
+  if (!exception.IsJSObject()) return true;
+  // We don't allocate, but the LookupIterator interface expects a handle.
+  DisallowGarbageCollection no_gc;
+  HandleScope handle_scope(this);
+  LookupIterator it(this, handle(JSReceiver::cast(exception), this),
+                    factory()->wasm_uncatchable_symbol(),
+                    LookupIterator::OWN_SKIP_INTERCEPTOR);
+  return !JSReceiver::HasProperty(&it).FromJust();
+}
+
 void Isolate::FireBeforeCallEnteredCallback() {
   for (auto& callback : before_call_entered_callbacks_) {
     callback(reinterpret_cast<v8::Isolate*>(this));
@@ -103,6 +116,41 @@ Isolate::ExceptionScope::~ExceptionScope() {
   isolate_->set_pending_exception(*pending_exception_);
 }
 
+bool Isolate::IsAnyInitialArrayPrototype(JSArray array) {
+  DisallowGarbageCollection no_gc;
+  return IsInAnyContext(array, Context::INITIAL_ARRAY_PROTOTYPE_INDEX);
+}
+
+void Isolate::DidFinishModuleAsyncEvaluation(unsigned ordinal) {
+  // To address overflow, the ordinal is reset when the async module with the
+  // largest vended ordinal finishes evaluating. Modules are evaluated in
+  // ascending order of their async_evaluating_ordinal.
+  //
+  // While the specification imposes a global total ordering, the intention is
+  // that for each async module, all its parents are totally ordered by when
+  // they first had their [[AsyncEvaluating]] bit set.
+  //
+  // The module with largest vended ordinal finishes evaluating implies that the
+  // async dependency as well as all other modules in that module's graph
+  // depending on async dependencies are finished evaluating.
+  //
+  // If the async dependency participates in other module graphs (e.g. via
+  // dynamic import, or other <script type=module> tags), those module graphs
+  // must have been evaluated either before or after the async dependency is
+  // settled, as the concrete Evaluate() method on cyclic module records is
+  // neither reentrant nor performs microtask checkpoints during its
+  // evaluation. If before, then all modules that depend on the async
+  // dependencies were given an ordinal that ensure they are relatively ordered,
+  // before the global ordinal was reset. If after, then the async evaluating
+  // ordering does not apply, as the dependency is no longer asynchronous.
+  //
+  // https://tc39.es/ecma262/#sec-moduleevaluation
+  if (ordinal + 1 == next_module_async_evaluating_ordinal_) {
+    next_module_async_evaluating_ordinal_ =
+        SourceTextModule::kFirstAsyncEvaluatingOrdinal;
+  }
+}
+
 #define NATIVE_CONTEXT_FIELD_ACCESSOR(index, type, name)    \
   Handle<type> Isolate::name() {                            \
     return Handle<type>(raw_native_context().name(), this); \
@@ -112,88 +160,6 @@ Isolate::ExceptionScope::~ExceptionScope() {
   }
 NATIVE_CONTEXT_FIELDS(NATIVE_CONTEXT_FIELD_ACCESSOR)
 #undef NATIVE_CONTEXT_FIELD_ACCESSOR
-
-bool Isolate::IsArrayConstructorIntact() {
-  Cell array_constructor_cell =
-      Cell::cast(root(RootIndex::kArrayConstructorProtector));
-  return array_constructor_cell.value() == Smi::FromInt(kProtectorValid);
-}
-
-bool Isolate::IsArraySpeciesLookupChainIntact() {
-  // Note: It would be nice to have debug checks to make sure that the
-  // species protector is accurate, but this would be hard to do for most of
-  // what the protector stands for:
-  // - You'd need to traverse the heap to check that no Array instance has
-  //   a constructor property
-  // - To check that Array[Symbol.species] == Array, JS code has to execute,
-  //   but JS cannot be invoked in callstack overflow situations
-  // All that could be checked reliably is that
-  // Array.prototype.constructor == Array. Given that limitation, no check is
-  // done here. In place, there are mjsunit tests harmony/array-species* which
-  // ensure that behavior is correct in various invalid protector cases.
-
-  PropertyCell species_cell =
-      PropertyCell::cast(root(RootIndex::kArraySpeciesProtector));
-  return species_cell.value().IsSmi() &&
-         Smi::ToInt(species_cell.value()) == kProtectorValid;
-}
-
-bool Isolate::IsTypedArraySpeciesLookupChainIntact() {
-  PropertyCell species_cell =
-      PropertyCell::cast(root(RootIndex::kTypedArraySpeciesProtector));
-  return species_cell.value().IsSmi() &&
-         Smi::ToInt(species_cell.value()) == kProtectorValid;
-}
-
-bool Isolate::IsRegExpSpeciesLookupChainIntact(
-    Handle<NativeContext> native_context) {
-  DCHECK_EQ(*native_context, this->raw_native_context());
-  PropertyCell species_cell = native_context->regexp_species_protector();
-  return species_cell.value().IsSmi() &&
-         Smi::ToInt(species_cell.value()) == kProtectorValid;
-}
-
-bool Isolate::IsPromiseSpeciesLookupChainIntact() {
-  PropertyCell species_cell =
-      PropertyCell::cast(root(RootIndex::kPromiseSpeciesProtector));
-  return species_cell.value().IsSmi() &&
-         Smi::ToInt(species_cell.value()) == kProtectorValid;
-}
-
-bool Isolate::IsStringLengthOverflowIntact() {
-  Cell string_length_cell = Cell::cast(root(RootIndex::kStringLengthProtector));
-  return string_length_cell.value() == Smi::FromInt(kProtectorValid);
-}
-
-bool Isolate::IsArrayBufferDetachingIntact() {
-  PropertyCell buffer_detaching =
-      PropertyCell::cast(root(RootIndex::kArrayBufferDetachingProtector));
-  return buffer_detaching.value() == Smi::FromInt(kProtectorValid);
-}
-
-bool Isolate::IsArrayIteratorLookupChainIntact() {
-  PropertyCell array_iterator_cell =
-      PropertyCell::cast(root(RootIndex::kArrayIteratorProtector));
-  return array_iterator_cell.value() == Smi::FromInt(kProtectorValid);
-}
-
-bool Isolate::IsMapIteratorLookupChainIntact() {
-  PropertyCell map_iterator_cell =
-      PropertyCell::cast(root(RootIndex::kMapIteratorProtector));
-  return map_iterator_cell.value() == Smi::FromInt(kProtectorValid);
-}
-
-bool Isolate::IsSetIteratorLookupChainIntact() {
-  PropertyCell set_iterator_cell =
-      PropertyCell::cast(root(RootIndex::kSetIteratorProtector));
-  return set_iterator_cell.value() == Smi::FromInt(kProtectorValid);
-}
-
-bool Isolate::IsStringIteratorLookupChainIntact() {
-  PropertyCell string_iterator_cell =
-      PropertyCell::cast(root(RootIndex::kStringIteratorProtector));
-  return string_iterator_cell.value() == Smi::FromInt(kProtectorValid);
-}
 
 }  // namespace internal
 }  // namespace v8

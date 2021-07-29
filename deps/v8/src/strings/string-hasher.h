@@ -13,11 +13,13 @@ namespace internal {
 template <typename T>
 class Vector;
 
+// Helper class for incrementally calculating string hashes in a form suitable
+// for storing into Name::raw_hash_field.
 class V8_EXPORT_PRIVATE StringHasher final {
  public:
   StringHasher() = delete;
-  template <typename schar>
-  static inline uint32_t HashSequentialString(const schar* chars, int length,
+  template <typename char_t>
+  static inline uint32_t HashSequentialString(const char_t* chars, int length,
                                               uint64_t seed);
 
   // Calculated hash value for a string consisting of 1 to

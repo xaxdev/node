@@ -2,6 +2,7 @@
 
 <!--lint disable prohibited-strings-->
 <!--lint disable maximum-line-length-->
+<!--lint disable no-literal-urls-->
 
 <table>
 <tr>
@@ -31,6 +32,10 @@
 </table>
 
 * Other Versions
+  * [16.x](CHANGELOG_V16.md)
+  * [15.x](CHANGELOG_V15.md)
+  * [14.x](CHANGELOG_V14.md)
+  * [13.x](CHANGELOG_V13.md)
   * [12.x](CHANGELOG_V12.md)
   * [10.x](CHANGELOG_V10.md)
   * [9.x](CHANGELOG_V9.md)
@@ -1559,16 +1564,16 @@ A fix for the following CVE is included in this release:
 ### Notable Changes
 
 * **cli**:
-  - add --max-http-header-size flag (cjihrig) [#24811](https://github.com/nodejs/node/pull/24811)
+  * add --max-http-header-size flag (cjihrig) [#24811](https://github.com/nodejs/node/pull/24811)
 * **crypto**:
-  - always accept certificates as public keys (Tobias Nießen) [#24234](https://github.com/nodejs/node/pull/24234)
-  - add key object API (Tobias Nießen) [#24234](https://github.com/nodejs/node/pull/24234)
-  - update root certificates (Sam Roberts) [#25113](https://github.com/nodejs/node/pull/25113)
+  * always accept certificates as public keys (Tobias Nießen) [#24234](https://github.com/nodejs/node/pull/24234)
+  * add key object API (Tobias Nießen) [#24234](https://github.com/nodejs/node/pull/24234)
+  * update root certificates (Sam Roberts) [#25113](https://github.com/nodejs/node/pull/25113)
 * **deps**:
-  - upgrade to libuv 1.24.1 (cjihrig) [#25078](https://github.com/nodejs/node/pull/25078)
-  - upgrade npm to 6.5.0 (Audrey Eschright) [#24734](https://github.com/nodejs/node/pull/24734)
+  * upgrade to libuv 1.24.1 (cjihrig) [#25078](https://github.com/nodejs/node/pull/25078)
+  * upgrade npm to 6.5.0 (Audrey Eschright) [#24734](https://github.com/nodejs/node/pull/24734)
 * **http**:
-  - add maxHeaderSize property (cjihrig) [#24860](https://github.com/nodejs/node/pull/24860)
+  * add maxHeaderSize property (cjihrig) [#24860](https://github.com/nodejs/node/pull/24860)
 
 ### Commits
 

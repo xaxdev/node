@@ -8,6 +8,7 @@
 #include <deque>
 #include <list>
 #include <map>
+#include <memory>
 #include <vector>
 
 #include "src/base/optional.h"
@@ -24,6 +25,11 @@
 #if defined(V8_OS_WIN) && defined(mvn)
 #undef mvn
 #endif
+
+#if defined(V8_OS_WIN)
+#include "src/base/platform/wrappers.h"
+#include "src/diagnostics/unwinding-info-win64.h"
+#endif  // V8_OS_WIN
 
 namespace v8 {
 namespace internal {
@@ -101,6 +107,9 @@ class Operand {
   // which helps in the encoding of instructions that use the stack pointer.
   inline Operand ToExtendedRegister() const;
 
+  // Returns new Operand adapted for using with W registers.
+  inline Operand ToW() const;
+
   inline Immediate immediate() const;
   inline int64_t ImmediateValue() const;
   inline RelocInfo::Mode ImmediateRMode() const;
@@ -146,20 +155,6 @@ class MemOperand {
   inline bool IsPreIndex() const;
   inline bool IsPostIndex() const;
 
-  // For offset modes, return the offset as an Operand. This helper cannot
-  // handle indexed modes.
-  inline Operand OffsetAsOperand() const;
-
-  enum PairResult {
-    kNotPair,  // Can't use a pair instruction.
-    kPairAB,   // Can use a pair instruction (operandA has lower address).
-    kPairBA    // Can use a pair instruction (operandB has lower address).
-  };
-  // Check if two MemOperand are consistent for stp/ldp use.
-  static PairResult AreConsistentForPair(const MemOperand& operandA,
-                                         const MemOperand& operandB,
-                                         int access_size_log2 = kXRegSizeLog2);
-
  private:
   Register base_;
   Register regoffset_;
@@ -185,9 +180,9 @@ class V8_EXPORT_PRIVATE Assembler : public AssemblerBase {
   explicit Assembler(const AssemblerOptions&,
                      std::unique_ptr<AssemblerBuffer> = {});
 
-  virtual ~Assembler();
+  ~Assembler() override;
 
-  virtual void AbortedCodeGeneration();
+  void AbortedCodeGeneration() override;
 
   // System functions ---------------------------------------------------------
   // Start generating code from the beginning of the buffer, discarding any code
@@ -371,7 +366,7 @@ class V8_EXPORT_PRIVATE Assembler : public AssemblerBase {
   // Instruction set functions ------------------------------------------------
 
   // Branch / Jump instructions.
-  // For branches offsets are scaled, i.e. they in instrcutions not in bytes.
+  // For branches offsets are scaled, i.e. in instructions not in bytes.
   // Branch to register.
   void br(const Register& xn);
 
@@ -786,6 +781,22 @@ class V8_EXPORT_PRIVATE Assembler : public AssemblerBase {
   void clz(const Register& rd, const Register& rn);
   void cls(const Register& rd, const Register& rn);
 
+  // Pointer Authentication Code for Instruction address, using key B, with
+  // address in x17 and modifier in x16 [Armv8.3].
+  void pacib1716();
+
+  // Pointer Authentication Code for Instruction address, using key B, with
+  // address in LR and modifier in SP [Armv8.3].
+  void pacibsp();
+
+  // Authenticate Instruction address, using key B, with address in x17 and
+  // modifier in x16 [Armv8.3].
+  void autib1716();
+
+  // Authenticate Instruction address, using key B, with address in LR and
+  // modifier in SP [Armv8.3].
+  void autibsp();
+
   // Memory instructions.
 
   // Load integer or FP register.
@@ -929,7 +940,10 @@ class V8_EXPORT_PRIVATE Assembler : public AssemblerBase {
   // Conditional speculation barrier.
   void csdb();
 
-  // Alias for system instructions.
+  // Branch target identification.
+  void bti(BranchTargetIdentifier id);
+
+  // No-op.
   void nop() { hint(NOP); }
 
   // Different nop operations are used by the code generator to detect certain
@@ -1737,6 +1751,9 @@ class V8_EXPORT_PRIVATE Assembler : public AssemblerBase {
   // FP convert to signed integer, nearest with ties to even.
   void fcvtns(const Register& rd, const VRegister& vn);
 
+  // FP JavaScript convert to signed integer, rounding toward zero [Armv8.3].
+  void fjcvtzs(const Register& rd, const VRegister& vn);
+
   // FP convert to unsigned integer, nearest with ties to even.
   void fcvtnu(const Register& rd, const VRegister& vn);
 
@@ -2046,10 +2063,31 @@ class V8_EXPORT_PRIVATE Assembler : public AssemblerBase {
   void debug(const char* message, uint32_t code, Instr params = BREAK);
 
   // Required by V8.
-  void dd(uint32_t data) { dc32(data); }
   void db(uint8_t data) { dc8(data); }
-  void dq(uint64_t data) { dc64(data); }
-  void dp(uintptr_t data) { dc64(data); }
+  void dd(uint32_t data, RelocInfo::Mode rmode = RelocInfo::NONE) {
+    BlockPoolsScope no_pool_scope(this);
+    if (!RelocInfo::IsNone(rmode)) {
+      DCHECK(RelocInfo::IsDataEmbeddedObject(rmode));
+      RecordRelocInfo(rmode);
+    }
+    dc32(data);
+  }
+  void dq(uint64_t data, RelocInfo::Mode rmode = RelocInfo::NONE) {
+    BlockPoolsScope no_pool_scope(this);
+    if (!RelocInfo::IsNone(rmode)) {
+      DCHECK(RelocInfo::IsDataEmbeddedObject(rmode));
+      RecordRelocInfo(rmode);
+    }
+    dc64(data);
+  }
+  void dp(uintptr_t data, RelocInfo::Mode rmode = RelocInfo::NONE) {
+    BlockPoolsScope no_pool_scope(this);
+    if (!RelocInfo::IsNone(rmode)) {
+      DCHECK(RelocInfo::IsDataEmbeddedObject(rmode));
+      RecordRelocInfo(rmode);
+    }
+    dc64(data);
+  }
 
   // Code generation helpers --------------------------------------------------
 
@@ -2351,18 +2389,23 @@ class V8_EXPORT_PRIVATE Assembler : public AssemblerBase {
     constpool_.Check(Emission::kIfNeeded, Jump::kRequired, margin);
   }
 
+  // Used by veneer checks below - returns the max (= overapproximated) pc
+  // offset after the veneer pool, if the veneer pool were to be emitted
+  // immediately.
+  intptr_t MaxPCOffsetAfterVeneerPoolIfEmittedNow(size_t margin);
   // Returns true if we should emit a veneer as soon as possible for a branch
   // which can at most reach to specified pc.
-  bool ShouldEmitVeneer(int max_reachable_pc,
-                        size_t margin = kVeneerDistanceMargin);
+  bool ShouldEmitVeneer(int max_reachable_pc, size_t margin) {
+    return max_reachable_pc < MaxPCOffsetAfterVeneerPoolIfEmittedNow(margin);
+  }
   bool ShouldEmitVeneers(size_t margin = kVeneerDistanceMargin) {
     return ShouldEmitVeneer(unresolved_branches_first_limit(), margin);
   }
 
-  // The maximum code size generated for a veneer. Currently one branch
+  // The code size generated for a veneer. Currently one branch
   // instruction. This is for code size checking purposes, and can be extended
   // in the future for example if we decide to add nops between the veneers.
-  static constexpr int kMaxVeneerCodeSize = 1 * kInstrSize;
+  static constexpr int kVeneerCodeSize = 1 * kInstrSize;
 
   void RecordVeneerPool(int location_offset, int size);
   // Emits veneers for branches that are approaching their maximum range.
@@ -2378,7 +2421,7 @@ class V8_EXPORT_PRIVATE Assembler : public AssemblerBase {
 
   using BlockConstPoolScope = ConstantPool::BlockScope;
 
-  class BlockPoolsScope {
+  class V8_NODISCARD BlockPoolsScope {
    public:
     // Block veneer and constant pool. Emits pools if necessary to ensure that
     // {margin} more bytes can be emitted without triggering pool emission.
@@ -2399,6 +2442,14 @@ class V8_EXPORT_PRIVATE Assembler : public AssemblerBase {
     BlockConstPoolScope block_const_pool_;
     DISALLOW_IMPLICIT_CONSTRUCTORS(BlockPoolsScope);
   };
+
+#if defined(V8_OS_WIN)
+  win64_unwindinfo::XdataEncoder* GetXdataEncoder() {
+    return xdata_encoder_.get();
+  }
+
+  win64_unwindinfo::BuiltinUnwindInfo GetUnwindInfo() const;
+#endif
 
  protected:
   inline const Register& AppropriateZeroRegFor(const CPURegister& reg) const;
@@ -2565,7 +2616,7 @@ class V8_EXPORT_PRIVATE Assembler : public AssemblerBase {
     STATIC_ASSERT(sizeof(instruction) == kInstrSize);
     DCHECK_LE(pc_ + sizeof(instruction), buffer_start_ + buffer_->size());
 
-    memcpy(pc_, &instruction, sizeof(instruction));
+    base::Memcpy(pc_, &instruction, sizeof(instruction));
     pc_ += sizeof(instruction);
     CheckBuffer();
   }
@@ -2577,13 +2628,13 @@ class V8_EXPORT_PRIVATE Assembler : public AssemblerBase {
 
     // TODO(all): Somehow register we have some data here. Then we can
     // disassemble it correctly.
-    memcpy(pc_, data, size);
+    base::Memcpy(pc_, data, size);
     pc_ += size;
     CheckBuffer();
   }
 
   void GrowBuffer();
-  void CheckBufferSpace();
+  V8_INLINE void CheckBufferSpace();
   void CheckBuffer();
 
   // Emission of the veneer pools may be blocked in some code sequences.
@@ -2606,7 +2657,8 @@ class V8_EXPORT_PRIVATE Assembler : public AssemblerBase {
   // not have to check for overflow. The same is true for writes of large
   // relocation info entries, and debug strings encoded in the instruction
   // stream.
-  static constexpr int kGap = 128;
+  static constexpr int kGap = 64;
+  STATIC_ASSERT(AssemblerBase::kMinimalBufferSize >= 2 * kGap);
 
  public:
 #ifdef DEBUG
@@ -2670,6 +2722,10 @@ class V8_EXPORT_PRIVATE Assembler : public AssemblerBase {
   // veneer margin (or kMaxInt if there are no unresolved branches).
   int next_veneer_pool_check_;
 
+#if defined(V8_OS_WIN)
+  std::unique_ptr<win64_unwindinfo::XdataEncoder> xdata_encoder_;
+#endif
+
  private:
   // Avoid overflows for displacements etc.
   static const int kMaximalBufferSize = 512 * MB;
@@ -2730,9 +2786,7 @@ class PatchingAssembler : public Assembler {
 
 class EnsureSpace {
  public:
-  explicit EnsureSpace(Assembler* assembler) : block_pools_scope_(assembler) {
-    assembler->CheckBufferSpace();
-  }
+  explicit V8_INLINE EnsureSpace(Assembler* assembler);
 
  private:
   Assembler::BlockPoolsScope block_pools_scope_;

@@ -6,11 +6,13 @@
 
 #include <stdarg.h>
 #include <sys/stat.h>
+
 #include <vector>
 
 #include "src/base/functional.h"
 #include "src/base/logging.h"
 #include "src/base/platform/platform.h"
+#include "src/base/platform/wrappers.h"
 #include "src/utils/memcopy.h"
 
 namespace v8 {
@@ -78,12 +80,12 @@ std::ostream& operator<<(std::ostream& os, FeedbackSlot slot) {
   return os << "#" << slot.id_;
 }
 
-size_t hash_value(BailoutId id) {
+size_t hash_value(BytecodeOffset id) {
   base::hash<int> h;
   return h(id.id_);
 }
 
-std::ostream& operator<<(std::ostream& os, BailoutId id) {
+std::ostream& operator<<(std::ostream& os, BytecodeOffset id) {
   return os << id.id_;
 }
 
@@ -132,8 +134,6 @@ int VSNPrintF(Vector<char> str, const char* format, va_list args) {
 void StrNCpy(Vector<char> dest, const char* src, size_t n) {
   base::OS::StrNCpy(dest.begin(), dest.length(), src, n);
 }
-
-void Flush(FILE* out) { fflush(out); }
 
 char* ReadLine(const char* prompt) {
   char* result = nullptr;
@@ -204,7 +204,7 @@ std::vector<char> ReadCharsFromFile(FILE* file, bool* exists, bool verbose,
   for (ptrdiff_t i = 0; i < size && feof(file) == 0;) {
     ptrdiff_t read = fread(result.data() + i, 1, size - i, file);
     if (read != (size - i) && ferror(file) != 0) {
-      fclose(file);
+      base::Fclose(file);
       *exists = false;
       return std::vector<char>();
     }
@@ -218,7 +218,7 @@ std::vector<char> ReadCharsFromFile(const char* filename, bool* exists,
                                     bool verbose) {
   FILE* file = base::OS::FOpen(filename, "rb");
   std::vector<char> result = ReadCharsFromFile(file, exists, verbose, filename);
-  if (file != nullptr) fclose(file);
+  if (file != nullptr) base::Fclose(file);
   return result;
 }
 
@@ -227,18 +227,6 @@ std::string VectorToString(const std::vector<char>& chars) {
     return std::string();
   }
   return std::string(chars.begin(), chars.end());
-}
-
-}  // namespace
-
-std::string ReadFile(const char* filename, bool* exists, bool verbose) {
-  std::vector<char> result = ReadCharsFromFile(filename, exists, verbose);
-  return VectorToString(result);
-}
-
-std::string ReadFile(FILE* file, bool* exists, bool verbose) {
-  std::vector<char> result = ReadCharsFromFile(file, exists, verbose, "");
-  return VectorToString(result);
 }
 
 int WriteCharsToFile(const char* str, int size, FILE* f) {
@@ -254,17 +242,16 @@ int WriteCharsToFile(const char* str, int size, FILE* f) {
   return total;
 }
 
-int AppendChars(const char* filename, const char* str, int size, bool verbose) {
-  FILE* f = base::OS::FOpen(filename, "ab");
-  if (f == nullptr) {
-    if (verbose) {
-      base::OS::PrintError("Cannot open file %s for writing.\n", filename);
-    }
-    return 0;
-  }
-  int written = WriteCharsToFile(str, size, f);
-  fclose(f);
-  return written;
+}  // namespace
+
+std::string ReadFile(const char* filename, bool* exists, bool verbose) {
+  std::vector<char> result = ReadCharsFromFile(filename, exists, verbose);
+  return VectorToString(result);
+}
+
+std::string ReadFile(FILE* file, bool* exists, bool verbose) {
+  std::vector<char> result = ReadCharsFromFile(file, exists, verbose, "");
+  return VectorToString(result);
 }
 
 int WriteChars(const char* filename, const char* str, int size, bool verbose) {
@@ -276,7 +263,7 @@ int WriteChars(const char* filename, const char* str, int size, bool verbose) {
     return 0;
   }
   int written = WriteCharsToFile(str, size, f);
-  fclose(f);
+  base::Fclose(f);
   return written;
 }
 

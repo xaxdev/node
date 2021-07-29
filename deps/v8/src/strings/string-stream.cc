@@ -298,9 +298,8 @@ void StringStream::PrintName(Object name) {
 
 void StringStream::PrintUsingMap(JSObject js_object) {
   Map map = js_object.map();
-  int real_size = map.NumberOfOwnDescriptors();
-  DescriptorArray descs = map.instance_descriptors();
-  for (int i = 0; i < real_size; i++) {
+  DescriptorArray descs = map.instance_descriptors(js_object.GetIsolate());
+  for (InternalIndex i : map.IterateOwnDescriptors()) {
     PropertyDetails details = descs.GetDetails(i);
     if (details.location() == kField) {
       DCHECK_EQ(kData, details.kind());
@@ -318,13 +317,8 @@ void StringStream::PrintUsingMap(JSObject js_object) {
         }
         Add(": ");
         FieldIndex index = FieldIndex::ForDescriptor(map, i);
-        if (js_object.IsUnboxedDoubleField(index)) {
-          double value = js_object.RawFastDoublePropertyAt(index);
-          Add("<unboxed double> %.16g\n", FmtElm(value));
-        } else {
-          Object value = js_object.RawFastPropertyAt(index);
-          Add("%o\n", value);
-        }
+        Object value = js_object.RawFastPropertyAt(index);
+        Add("%o\n", value);
       }
     }
   }

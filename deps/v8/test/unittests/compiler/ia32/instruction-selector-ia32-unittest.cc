@@ -658,6 +658,21 @@ TEST_F(InstructionSelectorTest, LoadAnd32) {
   EXPECT_EQ(s.ToVreg(p1), s.ToVreg(s[0]->InputAt(1)));
 }
 
+TEST_F(InstructionSelectorTest, LoadImmutableAnd32) {
+  StreamBuilder m(this, MachineType::Int32(), MachineType::Int32(),
+                  MachineType::Int32());
+  Node* const p0 = m.Parameter(0);
+  Node* const p1 = m.Parameter(1);
+  m.Return(m.Word32And(
+      p0, m.LoadImmutable(MachineType::Int32(), p1, m.Int32Constant(127))));
+  Stream s = m.Build();
+  ASSERT_EQ(1U, s.size());
+  EXPECT_EQ(kIA32And, s[0]->arch_opcode());
+  ASSERT_EQ(3U, s[0]->InputCount());
+  EXPECT_EQ(s.ToVreg(p0), s.ToVreg(s[0]->InputAt(0)));
+  EXPECT_EQ(s.ToVreg(p1), s.ToVreg(s[0]->InputAt(1)));
+}
+
 TEST_F(InstructionSelectorTest, LoadOr32) {
   StreamBuilder m(this, MachineType::Int32(), MachineType::Int32(),
                   MachineType::Int32());
@@ -836,57 +851,99 @@ TEST_F(InstructionSelectorTest, Word32Clz) {
   EXPECT_EQ(s.ToVreg(n), s.ToVreg(s[0]->Output()));
 }
 
-TEST_F(InstructionSelectorTest, StackCheck0) {
-  ExternalReference js_stack_limit =
-      ExternalReference::Create(isolate()->stack_guard()->address_of_jslimit());
-  StreamBuilder m(this, MachineType::Int32());
-  Node* const sp = m.LoadStackPointer();
-  Node* const stack_limit =
-      m.Load(MachineType::Pointer(), m.ExternalConstant(js_stack_limit));
-  Node* const interrupt = m.UintPtrLessThan(sp, stack_limit);
+// SIMD.
 
-  RawMachineLabel if_true, if_false;
-  m.Branch(interrupt, &if_true, &if_false);
-
-  m.Bind(&if_true);
-  m.Return(m.Int32Constant(1));
-
-  m.Bind(&if_false);
-  m.Return(m.Int32Constant(0));
-
-  Stream s = m.Build();
-
-  ASSERT_EQ(1U, s.size());
-  EXPECT_EQ(kIA32Cmp, s[0]->arch_opcode());
-  EXPECT_EQ(4U, s[0]->InputCount());
-  EXPECT_EQ(0U, s[0]->OutputCount());
+TEST_F(InstructionSelectorTest, SIMDSplatZero) {
+  // Test optimization for splat of contant 0.
+  // {i8x16,i16x8,i32x4,i64x2}.splat(const(0)) -> v128.zero().
+  // Optimizations for f32x4.splat and f64x2.splat not implemented since it
+  // doesn't improve the codegen as much (same number of instructions).
+  {
+    StreamBuilder m(this, MachineType::Simd128());
+    Node* const splat =
+        m.I64x2SplatI32Pair(m.Int32Constant(0), m.Int32Constant(0));
+    m.Return(splat);
+    Stream s = m.Build();
+    ASSERT_EQ(1U, s.size());
+    EXPECT_EQ(kIA32S128Zero, s[0]->arch_opcode());
+    ASSERT_EQ(0U, s[0]->InputCount());
+    EXPECT_EQ(1U, s[0]->OutputCount());
+  }
+  {
+    StreamBuilder m(this, MachineType::Simd128());
+    Node* const splat = m.I32x4Splat(m.Int32Constant(0));
+    m.Return(splat);
+    Stream s = m.Build();
+    ASSERT_EQ(1U, s.size());
+    EXPECT_EQ(kIA32S128Zero, s[0]->arch_opcode());
+    ASSERT_EQ(0U, s[0]->InputCount());
+    EXPECT_EQ(1U, s[0]->OutputCount());
+  }
+  {
+    StreamBuilder m(this, MachineType::Simd128());
+    Node* const splat = m.I16x8Splat(m.Int32Constant(0));
+    m.Return(splat);
+    Stream s = m.Build();
+    ASSERT_EQ(1U, s.size());
+    EXPECT_EQ(kIA32S128Zero, s[0]->arch_opcode());
+    ASSERT_EQ(0U, s[0]->InputCount());
+    EXPECT_EQ(1U, s[0]->OutputCount());
+  }
+  {
+    StreamBuilder m(this, MachineType::Simd128());
+    Node* const splat = m.I8x16Splat(m.Int32Constant(0));
+    m.Return(splat);
+    Stream s = m.Build();
+    ASSERT_EQ(1U, s.size());
+    EXPECT_EQ(kIA32S128Zero, s[0]->arch_opcode());
+    ASSERT_EQ(0U, s[0]->InputCount());
+    EXPECT_EQ(1U, s[0]->OutputCount());
+  }
 }
 
-TEST_F(InstructionSelectorTest, StackCheck1) {
-  ExternalReference js_stack_limit =
-      ExternalReference::Create(isolate()->stack_guard()->address_of_jslimit());
-  StreamBuilder m(this, MachineType::Int32());
-  Node* const sp = m.LoadStackPointer();
-  Node* const stack_limit =
-      m.Load(MachineType::Pointer(), m.ExternalConstant(js_stack_limit));
-  Node* const sp_within_limit = m.UintPtrLessThan(stack_limit, sp);
+struct SwizzleConstants {
+  uint8_t shuffle[kSimd128Size];
+  bool omit_add;
+};
 
-  RawMachineLabel if_true, if_false;
-  m.Branch(sp_within_limit, &if_true, &if_false);
+static constexpr SwizzleConstants kSwizzleConstants[] = {
+    {
+        // all lanes < kSimd128Size
+        {1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1},
+        true,
+    },
+    {
+        // lanes that are >= kSimd128Size have top bit set
+        {12, 13, 14, 15, 0x90, 0x91, 0x92, 0x93, 0xA0, 0xA1, 0xA2, 0xA3, 0xFC,
+         0xFD, 0xFE, 0xFF},
+        true,
+    },
+    {
+        {12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27},
+        false,
+    },
+};
 
-  m.Bind(&if_true);
-  m.Return(m.Int32Constant(1));
+using InstructionSelectorSIMDSwizzleConstantTest =
+    InstructionSelectorTestWithParam<SwizzleConstants>;
 
-  m.Bind(&if_false);
-  m.Return(m.Int32Constant(0));
-
+TEST_P(InstructionSelectorSIMDSwizzleConstantTest, SimdSwizzleConstant) {
+  // Test optimization of swizzle with constant indices.
+  auto param = GetParam();
+  StreamBuilder m(this, MachineType::Simd128(), MachineType::Simd128());
+  Node* const c = m.S128Const(param.shuffle);
+  Node* swizzle = m.AddNode(m.machine()->I8x16Swizzle(), m.Parameter(0), c);
+  m.Return(swizzle);
   Stream s = m.Build();
-
-  ASSERT_EQ(1U, s.size());
-  EXPECT_EQ(kIA32StackCheck, s[0]->arch_opcode());
-  EXPECT_EQ(2U, s[0]->InputCount());
-  EXPECT_EQ(0U, s[0]->OutputCount());
+  ASSERT_EQ(2U, s.size());
+  ASSERT_EQ(kIA32I8x16Swizzle, s[1]->arch_opcode());
+  ASSERT_EQ(param.omit_add, s[1]->misc());
+  ASSERT_EQ(1U, s[0]->OutputCount());
 }
+
+INSTANTIATE_TEST_SUITE_P(InstructionSelectorTest,
+                         InstructionSelectorSIMDSwizzleConstantTest,
+                         ::testing::ValuesIn(kSwizzleConstants));
 
 }  // namespace compiler
 }  // namespace internal

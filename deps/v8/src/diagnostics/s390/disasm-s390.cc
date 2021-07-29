@@ -52,6 +52,9 @@ class Decoder {
 
   ~Decoder() {}
 
+  Decoder(const Decoder&) = delete;
+  Decoder& operator=(const Decoder&) = delete;
+
   // Writes one disassembled instruction into 'buffer' (0-terminated).
   // Returns the length of the disassembled machine instruction in bytes.
   int InstructionDecode(byte* instruction);
@@ -83,8 +86,6 @@ class Decoder {
   const disasm::NameConverter& converter_;
   Vector<char> out_buffer_;
   int out_buffer_pos_;
-
-  DISALLOW_COPY_AND_ASSIGN(Decoder);
 };
 
 // Support for assertions in the Decoder formatting functions.
@@ -826,6 +827,13 @@ bool Decoder::DecodeGeneric(Instruction* instr) {
     break;
     S390_VRR_E_OPCODE_LIST(DECODE_VRR_E_INSTRUCTIONS)
 #undef DECODE_VRR_E_INSTRUCTIONS
+
+#define DECODE_VRR_F_INSTRUCTIONS(name, opcode_name, opcode_value) \
+  case opcode_name:                                                \
+    Format(instr, #name "\t'f1,'r1,'r2");                          \
+    break;
+    S390_VRR_F_OPCODE_LIST(DECODE_VRR_F_INSTRUCTIONS)
+#undef DECODE_VRR_F_INSTRUCTIONS
 
 #define DECODE_VRX_INSTRUCTIONS(name, opcode_name, opcode_value) \
   case opcode_name:                                              \

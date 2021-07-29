@@ -22,7 +22,12 @@ class JSGraph;
 class V8_EXPORT_PRIVATE BranchElimination final
     : public NON_EXPORTED_BASE(AdvancedReducer) {
  public:
-  BranchElimination(Editor* editor, JSGraph* js_graph, Zone* zone);
+  enum Phase {
+    kEARLY,
+    kLATE,
+  };
+  BranchElimination(Editor* editor, JSGraph* js_graph, Zone* zone,
+                    Phase phase = kLATE);
   ~BranchElimination() final;
 
   const char* reducer_name() const override { return "BranchElimination"; }
@@ -47,6 +52,7 @@ class V8_EXPORT_PRIVATE BranchElimination final
   // (true or false).
   class ControlPathConditions : public FunctionalList<BranchCondition> {
    public:
+    bool LookupCondition(Node* condition) const;
     bool LookupCondition(Node* condition, Node** branch, bool* is_true) const;
     void AddCondition(Zone* zone, Node* condition, Node* branch, bool is_true,
                       ControlPathConditions hint);
@@ -58,16 +64,19 @@ class V8_EXPORT_PRIVATE BranchElimination final
   Reduction ReduceBranch(Node* node);
   Reduction ReduceDeoptimizeConditional(Node* node);
   Reduction ReduceIf(Node* node, bool is_true_branch);
+  Reduction ReduceTrapConditional(Node* node);
   Reduction ReduceLoop(Node* node);
   Reduction ReduceMerge(Node* node);
   Reduction ReduceStart(Node* node);
   Reduction ReduceOtherControl(Node* node);
+  void SimplifyBranchCondition(Node* branch);
 
   Reduction TakeConditionsFromFirstControl(Node* node);
   Reduction UpdateConditions(Node* node, ControlPathConditions conditions);
   Reduction UpdateConditions(Node* node, ControlPathConditions prev_conditions,
                              Node* current_condition, Node* current_branch,
                              bool is_true_branch);
+  void MarkAsSafetyCheckIfNeeded(Node* branch, Node* node);
 
   Node* dead() const { return dead_; }
   Graph* graph() const;
@@ -84,6 +93,7 @@ class V8_EXPORT_PRIVATE BranchElimination final
   NodeAuxData<bool> reduced_;
   Zone* zone_;
   Node* dead_;
+  Phase phase_;
 };
 
 }  // namespace compiler

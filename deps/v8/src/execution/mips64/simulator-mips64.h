@@ -15,6 +15,23 @@
 // globals.h defines USE_SIMULATOR.
 #include "src/common/globals.h"
 
+template <typename T>
+int Compare(const T& a, const T& b) {
+  if (a == b)
+    return 0;
+  else if (a < b)
+    return -1;
+  else
+    return 1;
+}
+
+// Returns the negative absolute value of its argument.
+template <typename T,
+          typename = typename std::enable_if<std::is_signed<T>::value>::type>
+T Nabs(T a) {
+  return a < 0 ? a : -a;
+}
+
 #if defined(USE_SIMULATOR)
 // Running with a simulator.
 
@@ -266,6 +283,7 @@ class Simulator : public SimulatorBase {
   template <typename T_fp, typename T_int>
   void round_according_to_msacsr(T_fp toRound, T_fp* rounded,
                                  T_int* rounded_int);
+  void clear_fcsr_cause();
   void set_fcsr_rounding_mode(FPURoundingMode mode);
   void set_msacsr_rounding_mode(FPURoundingMode mode);
   unsigned int get_fcsr_rounding_mode();

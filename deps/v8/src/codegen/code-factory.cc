@@ -31,25 +31,35 @@ Handle<Code> CodeFactory::CEntry(Isolate* isolate, int result_size,
   const ArgvMode am = argv_mode;
   const bool be = builtin_exit_frame;
 
-  if (rs == 1 && sd == kDontSaveFPRegs && am == kArgvOnStack && !be) {
+  if (rs == 1 && sd == SaveFPRegsMode::kIgnore && am == ArgvMode::kStack &&
+      !be) {
     return CENTRY_CODE(Return1, DontSaveFPRegs, ArgvOnStack, NoBuiltinExit);
-  } else if (rs == 1 && sd == kDontSaveFPRegs && am == kArgvOnStack && be) {
+  } else if (rs == 1 && sd == SaveFPRegsMode::kIgnore &&
+             am == ArgvMode::kStack && be) {
     return CENTRY_CODE(Return1, DontSaveFPRegs, ArgvOnStack, BuiltinExit);
-  } else if (rs == 1 && sd == kDontSaveFPRegs && am == kArgvInRegister && !be) {
+  } else if (rs == 1 && sd == SaveFPRegsMode::kIgnore &&
+             am == ArgvMode::kRegister && !be) {
     return CENTRY_CODE(Return1, DontSaveFPRegs, ArgvInRegister, NoBuiltinExit);
-  } else if (rs == 1 && sd == kSaveFPRegs && am == kArgvOnStack && !be) {
+  } else if (rs == 1 && sd == SaveFPRegsMode::kSave && am == ArgvMode::kStack &&
+             !be) {
     return CENTRY_CODE(Return1, SaveFPRegs, ArgvOnStack, NoBuiltinExit);
-  } else if (rs == 1 && sd == kSaveFPRegs && am == kArgvOnStack && be) {
+  } else if (rs == 1 && sd == SaveFPRegsMode::kSave && am == ArgvMode::kStack &&
+             be) {
     return CENTRY_CODE(Return1, SaveFPRegs, ArgvOnStack, BuiltinExit);
-  } else if (rs == 2 && sd == kDontSaveFPRegs && am == kArgvOnStack && !be) {
+  } else if (rs == 2 && sd == SaveFPRegsMode::kIgnore &&
+             am == ArgvMode::kStack && !be) {
     return CENTRY_CODE(Return2, DontSaveFPRegs, ArgvOnStack, NoBuiltinExit);
-  } else if (rs == 2 && sd == kDontSaveFPRegs && am == kArgvOnStack && be) {
+  } else if (rs == 2 && sd == SaveFPRegsMode::kIgnore &&
+             am == ArgvMode::kStack && be) {
     return CENTRY_CODE(Return2, DontSaveFPRegs, ArgvOnStack, BuiltinExit);
-  } else if (rs == 2 && sd == kDontSaveFPRegs && am == kArgvInRegister && !be) {
+  } else if (rs == 2 && sd == SaveFPRegsMode::kIgnore &&
+             am == ArgvMode::kRegister && !be) {
     return CENTRY_CODE(Return2, DontSaveFPRegs, ArgvInRegister, NoBuiltinExit);
-  } else if (rs == 2 && sd == kSaveFPRegs && am == kArgvOnStack && !be) {
+  } else if (rs == 2 && sd == SaveFPRegsMode::kSave && am == ArgvMode::kStack &&
+             !be) {
     return CENTRY_CODE(Return2, SaveFPRegs, ArgvOnStack, NoBuiltinExit);
-  } else if (rs == 2 && sd == kSaveFPRegs && am == kArgvOnStack && be) {
+  } else if (rs == 2 && sd == SaveFPRegsMode::kSave && am == ArgvMode::kStack &&
+             be) {
     return CENTRY_CODE(Return2, SaveFPRegs, ArgvOnStack, BuiltinExit);
   }
 
@@ -70,7 +80,7 @@ Callable CodeFactory::CallApiCallback(Isolate* isolate) {
 
 // static
 Callable CodeFactory::LoadGlobalIC(Isolate* isolate, TypeofMode typeof_mode) {
-  return typeof_mode == NOT_INSIDE_TYPEOF
+  return typeof_mode == TypeofMode::kNotInside
              ? Builtins::CallableFor(isolate, Builtins::kLoadGlobalICTrampoline)
              : Builtins::CallableFor(
                    isolate, Builtins::kLoadGlobalICInsideTypeofTrampoline);
@@ -79,7 +89,7 @@ Callable CodeFactory::LoadGlobalIC(Isolate* isolate, TypeofMode typeof_mode) {
 // static
 Callable CodeFactory::LoadGlobalICInOptimizedCode(Isolate* isolate,
                                                   TypeofMode typeof_mode) {
-  return typeof_mode == NOT_INSIDE_TYPEOF
+  return typeof_mode == TypeofMode::kNotInside
              ? Builtins::CallableFor(isolate, Builtins::kLoadGlobalIC)
              : Builtins::CallableFor(isolate,
                                      Builtins::kLoadGlobalICInsideTypeof);
@@ -115,53 +125,6 @@ Callable CodeFactory::KeyedStoreIC_SloppyArguments(Isolate* isolate,
     case STORE_HANDLE_COW:
       builtin_index =
           Builtins::kKeyedStoreIC_SloppyArguments_NoTransitionHandleCOW;
-      break;
-    default:
-      UNREACHABLE();
-  }
-  return isolate->builtins()->CallableFor(isolate, builtin_index);
-}
-
-Callable CodeFactory::KeyedStoreIC_Slow(Isolate* isolate,
-                                        KeyedAccessStoreMode mode) {
-  Builtins::Name builtin_index;
-  switch (mode) {
-    case STANDARD_STORE:
-      builtin_index = Builtins::kKeyedStoreIC_Slow_Standard;
-      break;
-    case STORE_AND_GROW_HANDLE_COW:
-      builtin_index = Builtins::kKeyedStoreIC_Slow_GrowNoTransitionHandleCOW;
-      break;
-    case STORE_IGNORE_OUT_OF_BOUNDS:
-      builtin_index = Builtins::kKeyedStoreIC_Slow_NoTransitionIgnoreOOB;
-      break;
-    case STORE_HANDLE_COW:
-      builtin_index = Builtins::kKeyedStoreIC_Slow_NoTransitionHandleCOW;
-      break;
-    default:
-      UNREACHABLE();
-  }
-  return isolate->builtins()->CallableFor(isolate, builtin_index);
-}
-
-Callable CodeFactory::StoreInArrayLiteralIC_Slow(Isolate* isolate,
-                                                 KeyedAccessStoreMode mode) {
-  Builtins::Name builtin_index;
-  switch (mode) {
-    case STANDARD_STORE:
-      builtin_index = Builtins::kStoreInArrayLiteralIC_Slow_Standard;
-      break;
-    case STORE_AND_GROW_HANDLE_COW:
-      builtin_index =
-          Builtins::kStoreInArrayLiteralIC_Slow_GrowNoTransitionHandleCOW;
-      break;
-    case STORE_IGNORE_OUT_OF_BOUNDS:
-      builtin_index =
-          Builtins::kStoreInArrayLiteralIC_Slow_NoTransitionIgnoreOOB;
-      break;
-    case STORE_HANDLE_COW:
-      builtin_index =
-          Builtins::kStoreInArrayLiteralIC_Slow_NoTransitionHandleCOW;
       break;
     default:
       UNREACHABLE();
@@ -267,9 +230,9 @@ Callable CodeFactory::StringAdd(Isolate* isolate, StringAddFlags flags) {
     case STRING_ADD_CHECK_NONE:
       return Builtins::CallableFor(isolate, Builtins::kStringAdd_CheckNone);
     case STRING_ADD_CONVERT_LEFT:
-      return Builtins::CallableFor(isolate, Builtins::kStringAdd_ConvertLeft);
+      return Builtins::CallableFor(isolate, Builtins::kStringAddConvertLeft);
     case STRING_ADD_CONVERT_RIGHT:
-      return Builtins::CallableFor(isolate, Builtins::kStringAdd_ConvertRight);
+      return Builtins::CallableFor(isolate, Builtins::kStringAddConvertRight);
   }
   UNREACHABLE();
 }
@@ -277,16 +240,6 @@ Callable CodeFactory::StringAdd(Isolate* isolate, StringAddFlags flags) {
 // static
 Callable CodeFactory::ResumeGenerator(Isolate* isolate) {
   return Builtins::CallableFor(isolate, Builtins::kResumeGeneratorTrampoline);
-}
-
-// static
-Callable CodeFactory::FrameDropperTrampoline(Isolate* isolate) {
-  return Builtins::CallableFor(isolate, Builtins::kFrameDropperTrampoline);
-}
-
-// static
-Callable CodeFactory::HandleDebuggerStatement(Isolate* isolate) {
-  return Builtins::CallableFor(isolate, Builtins::kHandleDebuggerStatement);
 }
 
 // static
@@ -305,13 +258,25 @@ Callable CodeFactory::FastNewFunctionContext(Isolate* isolate,
 }
 
 // static
-Callable CodeFactory::ArgumentAdaptor(Isolate* isolate) {
-  return Builtins::CallableFor(isolate, Builtins::kArgumentsAdaptorTrampoline);
+Callable CodeFactory::Call(Isolate* isolate, ConvertReceiverMode mode) {
+  return Callable(isolate->builtins()->Call(mode), CallTrampolineDescriptor{});
 }
 
 // static
-Callable CodeFactory::Call(Isolate* isolate, ConvertReceiverMode mode) {
-  return Callable(isolate->builtins()->Call(mode), CallTrampolineDescriptor{});
+Callable CodeFactory::Call_WithFeedback(Isolate* isolate,
+                                        ConvertReceiverMode mode) {
+  switch (mode) {
+    case ConvertReceiverMode::kNullOrUndefined:
+      return Builtins::CallableFor(
+          isolate, Builtins::kCall_ReceiverIsNullOrUndefined_WithFeedback);
+    case ConvertReceiverMode::kNotNullOrUndefined:
+      return Builtins::CallableFor(
+          isolate, Builtins::kCall_ReceiverIsNotNullOrUndefined_WithFeedback);
+    case ConvertReceiverMode::kAny:
+      return Builtins::CallableFor(isolate,
+                                   Builtins::kCall_ReceiverIsAny_WithFeedback);
+  }
+  UNREACHABLE();
 }
 
 // static
@@ -423,8 +388,8 @@ Callable CodeFactory::InterpreterPushArgsThenConstruct(
 Callable CodeFactory::InterpreterCEntry(Isolate* isolate, int result_size) {
   // Note: If we ever use fpregs in the interpreter then we will need to
   // save fpregs too.
-  Handle<Code> code = CodeFactory::CEntry(isolate, result_size, kDontSaveFPRegs,
-                                          kArgvInRegister);
+  Handle<Code> code = CodeFactory::CEntry(
+      isolate, result_size, SaveFPRegsMode::kIgnore, ArgvMode::kRegister);
   if (result_size == 1) {
     return Callable(code, InterpreterCEntry1Descriptor{});
   } else {
@@ -437,6 +402,13 @@ Callable CodeFactory::InterpreterCEntry(Isolate* isolate, int result_size) {
 Callable CodeFactory::InterpreterOnStackReplacement(Isolate* isolate) {
   return Builtins::CallableFor(isolate,
                                Builtins::kInterpreterOnStackReplacement);
+}
+
+// static
+Callable CodeFactory::InterpreterOnStackReplacement_ToBaseline(
+    Isolate* isolate) {
+  return Builtins::CallableFor(
+      isolate, Builtins::kInterpreterOnStackReplacement_ToBaseline);
 }
 
 // static

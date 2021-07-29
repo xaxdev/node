@@ -23,11 +23,11 @@ TEST_F(WasmCapiTest, Memory) {
   byte size_code[] = {WASM_MEMORY_SIZE};
   AddExportedFunction(CStrVector("size"), size_code, sizeof(size_code),
                       &return_i32);
-  byte load_code[] = {WASM_LOAD_MEM(MachineType::Int8(), WASM_GET_LOCAL(0))};
+  byte load_code[] = {WASM_LOAD_MEM(MachineType::Int8(), WASM_LOCAL_GET(0))};
   AddExportedFunction(CStrVector("load"), load_code, sizeof(load_code),
                       &param_i32_return_i32);
-  byte store_code[] = {WASM_STORE_MEM(MachineType::Int8(), WASM_GET_LOCAL(0),
-                                      WASM_GET_LOCAL(1))};
+  byte store_code[] = {WASM_STORE_MEM(MachineType::Int8(), WASM_LOCAL_GET(0),
+                                      WASM_LOCAL_GET(1))};
   AddExportedFunction(CStrVector("store"), store_code, sizeof(store_code),
                       &param_i32_i32);
 
@@ -40,6 +40,9 @@ TEST_F(WasmCapiTest, Memory) {
   Func* size_func = GetExportedFunction(1);
   Func* load_func = GetExportedFunction(2);
   Func* store_func = GetExportedFunction(3);
+
+  // Try cloning.
+  EXPECT_TRUE(memory->copy()->same(memory));
 
   // Check initial state.
   EXPECT_EQ(2u, memory->size());
@@ -70,7 +73,7 @@ TEST_F(WasmCapiTest, Memory) {
   EXPECT_EQ(0, result[0].i32());
   // load(0x20000) -> trap
   args[0] = Val::i32(0x20000);
-  own<Trap*> trap = load_func->call(args, result);
+  own<Trap> trap = load_func->call(args, result);
   EXPECT_NE(nullptr, trap.get());
 
   // Mutate memory.
@@ -111,8 +114,8 @@ TEST_F(WasmCapiTest, Memory) {
 
   // Create standalone memory.
   // TODO(wasm): Once Wasm allows multiple memories, turn this into an import.
-  own<MemoryType*> mem_type = MemoryType::make(Limits(5, 5));
-  own<Memory*> memory2 = Memory::make(store(), mem_type.get());
+  own<MemoryType> mem_type = MemoryType::make(Limits(5, 5));
+  own<Memory> memory2 = Memory::make(store(), mem_type.get());
   EXPECT_EQ(5u, memory2->size());
   EXPECT_EQ(false, memory2->grow(1));
   EXPECT_EQ(true, memory2->grow(0));

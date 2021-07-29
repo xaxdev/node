@@ -7,6 +7,13 @@ const path = require('path');
 const fs = require('fs');
 const readline = require('readline');
 
+class CaseIndifferentMap {
+  _map = new Map();
+
+  get(key) { return this._map.get(key.toLowerCase()); }
+  set(key, value) { return this._map.set(key.toLowerCase(), value); }
+}
+
 const log = spawn(
   'git',
   // Inspect author name/email and body.
@@ -23,7 +30,7 @@ else
 
 output.write('# Authors ordered by first contribution.\n\n');
 
-const mailmap = new Map();
+const mailmap = new CaseIndifferentMap();
 {
   const lines = fs.readFileSync(path.resolve(__dirname, '../', '.mailmap'),
                                 { encoding: 'utf8' }).split('\n');
@@ -34,19 +41,21 @@ const mailmap = new Map();
     let match;
     // Replaced Name <original@example.com>
     if (match = line.match(/^([^<]+)\s+(<[^>]+>)$/)) {
-      mailmap.set(match[2], { author: match[1] });
+      mailmap.set(match[2].toLowerCase(), {
+        author: match[1], email: match[2]
+      });
     // <replaced@example.com> <original@example.com>
     } else if (match = line.match(/^<([^>]+)>\s+(<[^>]+>)$/)) {
-      mailmap.set(match[2], { email: match[1] });
+      mailmap.set(match[2].toLowerCase(), { email: match[1] });
     // Replaced Name <replaced@example.com> <original@example.com>
     } else if (match = line.match(/^([^<]+)\s+(<[^>]+>)\s+(<[^>]+>)$/)) {
-      mailmap.set(match[3], {
+      mailmap.set(match[3].toLowerCase(), {
         author: match[1], email: match[2]
       });
     // Replaced Name <replaced@example.com> Original Name <original@example.com>
     } else if (match =
         line.match(/^([^<]+)\s+(<[^>]+>)\s+([^<]+)\s+(<[^>]+>)$/)) {
-      mailmap.set(match[3] + '\0' + match[4], {
+      mailmap.set(match[3] + '\0' + match[4].toLowerCase(), {
         author: match[1], email: match[2]
       });
     } else {
@@ -68,8 +77,10 @@ rl.on('line', (line) => {
   if (!match) return;
 
   let { author, email } = match.groups;
+  const emailLower = email.toLowerCase();
 
-  const replacement = mailmap.get(author + '\0' + email) || mailmap.get(email);
+  const replacement =
+    mailmap.get(author + '\0' + emailLower) || mailmap.get(emailLower);
   if (replacement) {
     ({ author, email } = { author, email, ...replacement });
   }

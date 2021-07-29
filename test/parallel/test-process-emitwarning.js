@@ -42,7 +42,7 @@ class CustomWarning extends Error {
   [testMsg, { type: testType, code: testCode, detail: true }],
   [testMsg, { type: testType, code: testCode, detail: [] }],
   [testMsg, { type: testType, code: testCode, detail: null }],
-  [testMsg, { type: testType, code: testCode, detail: 1 }]
+  [testMsg, { type: testType, code: testCode, detail: 1 }],
 ].forEach((args) => {
   process.emitWarning(...args);
 });
@@ -72,10 +72,10 @@ process.emitWarning(warningThrowToString);
   ['', '', []],
   [],
   [undefined, 'foo', 'bar'],
-  [undefined]
+  [undefined],
 ].forEach((args) => {
-  common.expectsError(
+  assert.throws(
     () => process.emitWarning(...args),
-    { code: 'ERR_INVALID_ARG_TYPE', type: TypeError }
+    { code: 'ERR_INVALID_ARG_TYPE', name: 'TypeError' }
   );
 });

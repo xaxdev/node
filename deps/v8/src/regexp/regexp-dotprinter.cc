@@ -13,8 +13,6 @@ namespace internal {
 // -------------------------------------------------------------------
 // Dot/dotty output
 
-#ifdef DEBUG
-
 class DotPrinterImpl : public NodeVisitor {
  public:
   explicit DotPrinterImpl(std::ostream& os) : os_(os) {}
@@ -62,8 +60,7 @@ void DotPrinterImpl::PrintOnFailure(RegExpNode* from, RegExpNode* on_failure) {
 
 class AttributePrinter {
  public:
-  explicit AttributePrinter(std::ostream& os)  // NOLINT
-      : os_(os), first_(true) {}
+  explicit AttributePrinter(std::ostream& os) : os_(os), first_(true) {}
   void PrintSeparator() {
     if (first_) {
       first_ = false;
@@ -114,6 +111,15 @@ void DotPrinterImpl::VisitChoice(ChoiceNode* that) {
   }
 }
 
+void DotPrinterImpl::VisitLoopChoice(LoopChoiceNode* that) {
+  VisitChoice(that);
+}
+
+void DotPrinterImpl::VisitNegativeLookaroundChoice(
+    NegativeLookaroundChoiceNode* that) {
+  VisitChoice(that);
+}
+
 void DotPrinterImpl::VisitText(TextNode* that) {
   Zone* zone = that->zone();
   os_ << "  n" << that << " [label=\"";
@@ -134,7 +140,7 @@ void DotPrinterImpl::VisitText(TextNode* that) {
         if (node->is_negated()) os_ << "^";
         for (int j = 0; j < node->ranges(zone)->length(); j++) {
           CharacterRange range = node->ranges(zone)->at(j);
-          os_ << AsUC16(range.from()) << "-" << AsUC16(range.to());
+          os_ << AsUC32(range.from()) << "-" << AsUC32(range.to());
         }
         os_ << "]";
         break;
@@ -191,7 +197,7 @@ void DotPrinterImpl::VisitAssertion(AssertionNode* that) {
 void DotPrinterImpl::VisitAction(ActionNode* that) {
   os_ << "  n" << that << " [";
   switch (that->action_type_) {
-    case ActionNode::SET_REGISTER:
+    case ActionNode::SET_REGISTER_FOR_LOOP:
       os_ << "label=\"$" << that->data_.u_store_register.reg
           << ":=" << that->data_.u_store_register.value << "\", shape=octagon";
       break;
@@ -230,14 +236,10 @@ void DotPrinterImpl::VisitAction(ActionNode* that) {
   Visit(successor);
 }
 
-#endif  // DEBUG
-
 void DotPrinter::DotPrint(const char* label, RegExpNode* node) {
-#ifdef DEBUG
   StdoutStream os;
   DotPrinterImpl printer(os);
   printer.PrintNode(label, node);
-#endif  // DEBUG
 }
 
 }  // namespace internal

@@ -7,6 +7,7 @@
 
 #include "include/v8-internal.h"
 #include "src/base/atomicops.h"
+#include "src/common/globals.h"
 
 namespace v8 {
 namespace internal {
@@ -15,12 +16,16 @@ class ExecutionAccess;
 class InterruptsScope;
 class Isolate;
 class Object;
+class RootVisitor;
 
 // StackGuard contains the handling of the limits that are used to limit the
 // number of nested invocations of JavaScript and the stack size used in each
 // invocation.
-class V8_EXPORT_PRIVATE StackGuard final {
+class V8_EXPORT_PRIVATE V8_NODISCARD StackGuard final {
  public:
+  StackGuard(const StackGuard&) = delete;
+  StackGuard& operator=(const StackGuard&) = delete;
+
   explicit StackGuard(Isolate* isolate) : isolate_(isolate) {}
 
   // Pass the address beyond which the stack should not grow.  The stack
@@ -37,12 +42,8 @@ class V8_EXPORT_PRIVATE StackGuard final {
   char* RestoreStackGuard(char* from);
   static int ArchiveSpacePerThread() { return sizeof(ThreadLocal); }
   void FreeThreadResources();
-  // Sets up the default stack guard for this thread if it has not
-  // already been set up.
+  // Sets up the default stack guard for this thread.
   void InitThread(const ExecutionAccess& lock);
-  // Clears the stack guard for this thread so it does not look as if
-  // it has been set up.
-  void ClearThread(const ExecutionAccess& lock);
 
 #define INTERRUPT_LIST(V)                                         \
   V(TERMINATE_EXECUTION, TerminateExecution, 0)                   \
@@ -89,6 +90,17 @@ class V8_EXPORT_PRIVATE StackGuard final {
   // stack overflow, then handle the interruption accordingly.
   Object HandleInterrupts();
 
+  // Special case of {HandleInterrupts}: checks for termination requests only.
+  // This is guaranteed to never cause GC, so can be used to interrupt
+  // long-running computations that are not GC-safe.
+  bool HasTerminationRequest();
+
+  static constexpr int kSizeInBytes = 7 * kSystemPointerSize;
+
+  static char* Iterate(RootVisitor* v, char* thread_storage) {
+    return thread_storage + ArchiveSpacePerThread();
+  }
+
  private:
   bool CheckInterrupt(InterruptFlag flag);
   void RequestInterrupt(InterruptFlag flag);
@@ -124,30 +136,29 @@ class V8_EXPORT_PRIVATE StackGuard final {
 
   class ThreadLocal final {
    public:
-    ThreadLocal() { Clear(); }
-    // You should hold the ExecutionAccess lock when you call Initialize or
-    // Clear.
-    void Clear();
+    ThreadLocal() {}
 
-    // Returns true if the heap's stack limits should be set, false if not.
-    bool Initialize(Isolate* isolate);
+    void Initialize(Isolate* isolate, const ExecutionAccess& lock);
 
     // The stack limit is split into a JavaScript and a C++ stack limit. These
     // two are the same except when running on a simulator where the C++ and
     // JavaScript stacks are separate. Each of the two stack limits have two
-    // values. The one eith the real_ prefix is the actual stack limit
+    // values. The one with the real_ prefix is the actual stack limit
     // set for the VM. The one without the real_ prefix has the same value as
     // the actual stack limit except when there is an interruption (e.g. debug
     // break or preemption) in which case it is lowered to make stack checks
     // fail. Both the generated code and the runtime system check against the
     // one without the real_ prefix.
-    uintptr_t real_jslimit_;  // Actual JavaScript stack limit set for the VM.
-    uintptr_t real_climit_;   // Actual C++ stack limit set for the VM.
+
+    // Actual JavaScript stack limit set for the VM.
+    uintptr_t real_jslimit_ = kIllegalLimit;
+    // Actual C++ stack limit set for the VM.
+    uintptr_t real_climit_ = kIllegalLimit;
 
     // jslimit_ and climit_ can be read without any lock.
     // Writing requires the ExecutionAccess lock.
-    base::AtomicWord jslimit_;
-    base::AtomicWord climit_;
+    base::AtomicWord jslimit_ = kIllegalLimit;
+    base::AtomicWord climit_ = kIllegalLimit;
 
     uintptr_t jslimit() {
       return bit_cast<uintptr_t>(base::Relaxed_Load(&jslimit_));
@@ -164,8 +175,8 @@ class V8_EXPORT_PRIVATE StackGuard final {
                                  static_cast<base::AtomicWord>(limit));
     }
 
-    InterruptsScope* interrupt_scopes_;
-    int interrupt_flags_;
+    InterruptsScope* interrupt_scopes_ = nullptr;
+    intptr_t interrupt_flags_ = 0;
   };
 
   // TODO(isolates): Technically this could be calculated directly from a
@@ -176,9 +187,9 @@ class V8_EXPORT_PRIVATE StackGuard final {
   friend class Isolate;
   friend class StackLimitCheck;
   friend class InterruptsScope;
-
-  DISALLOW_COPY_AND_ASSIGN(StackGuard);
 };
+
+STATIC_ASSERT(StackGuard::kSizeInBytes == sizeof(StackGuard));
 
 }  // namespace internal
 }  // namespace v8

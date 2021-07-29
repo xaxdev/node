@@ -54,13 +54,15 @@ class DeoptimizeCodeThread : public v8::base::Thread {
   void Run() override {
     v8::Locker locker(isolate_);
     isolate_->Enter();
-    v8::HandleScope handle_scope(isolate_);
-    v8::Local<v8::Context> context =
-        v8::Local<v8::Context>::New(isolate_, context_);
-    v8::Context::Scope context_scope(context);
-    // This code triggers deoptimization of some function that will be
-    // used in a different thread.
-    CompileRun(source_);
+    {
+      v8::HandleScope handle_scope(isolate_);
+      v8::Local<v8::Context> context =
+          v8::Local<v8::Context>::New(isolate_, context_);
+      v8::Context::Scope context_scope(context);
+      // This code triggers deoptimization of some function that will be
+      // used in a different thread.
+      CompileRun(source_);
+    }
     isolate_->Exit();
   }
 
@@ -82,7 +84,7 @@ void UnlockForDeoptimization(const v8::FunctionCallbackInfo<v8::Value>& args) {
     isolate->Exit();
     v8::Unlocker unlocker(isolate);
     // Starts the deoptimizing thread.
-    deoptimizer->Start();
+    CHECK(deoptimizer->Start());
     // Waits for deoptimization to finish.
     deoptimizer->Join();
   }
@@ -107,7 +109,7 @@ void UnlockForDeoptimizationIfReady(
       isolate->Exit();
       v8::Unlocker unlocker(isolate);
       // Starts the thread that deoptimizes the function.
-      deoptimizer->Start();
+      CHECK(deoptimizer->Start());
       // Waits for the deoptimizing thread to finish.
       deoptimizer->Join();
     }
@@ -339,7 +341,7 @@ TEST(KangarooIsolates) {
     CompileRun("function getValue() { return 30; }");
     thread1.reset(new KangarooThread(isolate, context));
   }
-  thread1->Start();
+  CHECK(thread1->Start());
   thread1->Join();
 }
 
@@ -363,10 +365,10 @@ class JoinableThread {
   }
 
   virtual ~JoinableThread() = default;
+  JoinableThread(const JoinableThread&) = delete;
+  JoinableThread& operator=(const JoinableThread&) = delete;
 
-  void Start() {
-    thread_.Start();
-  }
+  void Start() { CHECK(thread_.Start()); }
 
   void Join() {
     semaphore_.Wait();
@@ -396,8 +398,6 @@ class JoinableThread {
   ThreadWithSemaphore thread_;
 
   friend class ThreadWithSemaphore;
-
-  DISALLOW_COPY_AND_ASSIGN(JoinableThread);
 };
 
 
@@ -946,7 +946,7 @@ TEST(ExtensionsRegistration) {
                                    "test4", "test5", "test6", "test7"};
   for (const char* name : extension_names) {
     v8::RegisterExtension(
-        v8::base::make_unique<v8::Extension>(name, kSimpleExtensionSource));
+        std::make_unique<v8::Extension>(name, kSimpleExtensionSource));
   }
   std::vector<JoinableThread*> threads;
   threads.reserve(kNThreads);

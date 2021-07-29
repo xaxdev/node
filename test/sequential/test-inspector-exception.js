@@ -1,4 +1,3 @@
-// Flags: --expose-internals
 'use strict';
 const common = require('../common');
 const fixtures = require('../common/fixtures');
@@ -26,7 +25,7 @@ async function testBreakpointOnStart(session) {
       'params': { 'interval': 100 } },
     { 'method': 'Debugger.setBlackboxPatterns',
       'params': { 'patterns': [] } },
-    { 'method': 'Runtime.runIfWaitingForDebugger' }
+    { 'method': 'Runtime.runIfWaitingForDebugger' },
   ];
 
   await session.send(commands);
@@ -42,4 +41,4 @@ async function runTest() {
   assert.strictEqual((await child.expectShutdown()).exitCode, 1);
 }
 
-runTest();
+runTest().then(common.mustCall());

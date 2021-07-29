@@ -6,6 +6,9 @@
 #define V8_OBJECTS_SOURCE_TEXT_MODULE_H_
 
 #include "src/objects/module.h"
+#include "src/objects/promise.h"
+#include "src/zone/zone-containers.h"
+#include "torque-generated/bit-fields.h"
 
 // Has to be the last include (doesn't have include guards):
 #include "src/objects/object-macros.h"
@@ -15,44 +18,26 @@ namespace internal {
 
 class UnorderedModuleSet;
 
+#include "torque-generated/src/objects/source-text-module-tq.inc"
+
 // The runtime representation of an ECMAScript Source Text Module Record.
 // https://tc39.github.io/ecma262/#sec-source-text-module-records
-class SourceTextModule : public Module {
+class SourceTextModule
+    : public TorqueGeneratedSourceTextModule<SourceTextModule, Module> {
  public:
   NEVER_READ_ONLY_SPACE
-  DECL_CAST(SourceTextModule)
   DECL_VERIFIER(SourceTextModule)
   DECL_PRINTER(SourceTextModule)
-
-  // The code representing this module, or an abstraction thereof.
-  // This is either a SharedFunctionInfo, a JSFunction, a JSGeneratorObject, or
-  // a SourceTextModuleInfo, depending on the state (status) the module is in.
-  // See SourceTextModule::SourceTextModuleVerify() for the precise invariant.
-  DECL_ACCESSORS(code, Object)
-
-  // Arrays of cells corresponding to regular exports and regular imports.
-  // A cell's position in the array is determined by the cell index of the
-  // associated module entry (which coincides with the variable index of the
-  // associated variable).
-  DECL_ACCESSORS(regular_exports, FixedArray)
-  DECL_ACCESSORS(regular_imports, FixedArray)
 
   // The shared function info in case {status} is not kEvaluating, kEvaluated or
   // kErrored.
   SharedFunctionInfo GetSharedFunctionInfo() const;
 
-  // Modules imported or re-exported by this module.
-  // Corresponds 1-to-1 to the module specifier strings in
-  // SourceTextModuleInfo::module_requests.
-  DECL_ACCESSORS(requested_modules, FixedArray)
+  Script GetScript() const;
 
-  // [script]: Script from which the module originates.
-  DECL_ACCESSORS(script, Script)
-
-  // The value of import.meta inside of this module.
-  // Lazily initialized on first access. It's the hole before first access and
-  // a JSObject afterwards.
-  DECL_ACCESSORS(import_meta, Object)
+  // Whether or not this module is an async module. Set during module creation
+  // and does not change afterwards.
+  DECL_BOOLEAN_ACCESSORS(async)
 
   // Get the SourceTextModuleInfo associated with the code.
   inline SourceTextModuleInfo info() const;
@@ -67,29 +52,90 @@ class SourceTextModule : public Module {
   static int ImportIndex(int cell_index);
   static int ExportIndex(int cell_index);
 
+  // Used by builtins to fulfill or reject the promise associated
+  // with async SourceTextModules.
+  static void AsyncModuleExecutionFulfilled(Isolate* isolate,
+                                            Handle<SourceTextModule> module);
+  static void AsyncModuleExecutionRejected(Isolate* isolate,
+                                           Handle<SourceTextModule> module,
+                                           Handle<Object> exception);
+
   // Get the namespace object for [module_request] of [module].  If it doesn't
   // exist yet, it is created.
   static Handle<JSModuleNamespace> GetModuleNamespace(
       Isolate* isolate, Handle<SourceTextModule> module, int module_request);
 
-  // Layout description.
-  DEFINE_FIELD_OFFSET_CONSTANTS(Module::kHeaderSize,
-                                TORQUE_GENERATED_SOURCE_TEXT_MODULE_FIELDS)
+  // Get the import.meta object of [module].  If it doesn't exist yet, it is
+  // created and passed to the embedder callback for initialization.
+  V8_EXPORT_PRIVATE static MaybeHandle<JSObject> GetImportMeta(
+      Isolate* isolate, Handle<SourceTextModule> module);
 
   using BodyDescriptor =
       SubclassBodyDescriptor<Module::BodyDescriptor,
                              FixedBodyDescriptor<kCodeOffset, kSize, kSize>>;
 
+  static constexpr unsigned kFirstAsyncEvaluatingOrdinal = 2;
+
  private:
   friend class Factory;
   friend class Module;
 
-  // TODO(neis): Don't store those in the module object?
-  DECL_INT_ACCESSORS(dfs_index)
-  DECL_INT_ACCESSORS(dfs_ancestor_index)
+  struct AsyncEvaluatingOrdinalCompare;
+  using AsyncParentCompletionSet =
+      ZoneSet<Handle<SourceTextModule>, AsyncEvaluatingOrdinalCompare>;
+
+  // Appends a tuple of module and generator to the async parent modules
+  // ArrayList.
+  inline static void AddAsyncParentModule(Isolate* isolate,
+                                          Handle<SourceTextModule> module,
+                                          Handle<SourceTextModule> parent);
+
+  // Get the non-hole cycle root. Only valid when status >= kEvaluated.
+  inline Handle<SourceTextModule> GetCycleRoot(Isolate* isolate) const;
+
+  // Returns a SourceTextModule, the
+  // ith parent in depth first traversal order of a given async child.
+  inline Handle<SourceTextModule> GetAsyncParentModule(Isolate* isolate,
+                                                       int index);
+
+  // Returns the number of async parent modules for a given async child.
+  inline int AsyncParentModuleCount();
+
+  inline bool IsAsyncEvaluating() const;
+
+  inline bool HasPendingAsyncDependencies();
+  inline void IncrementPendingAsyncDependencies();
+  inline void DecrementPendingAsyncDependencies();
+
+  // Bits for flags.
+  DEFINE_TORQUE_GENERATED_SOURCE_TEXT_MODULE_FLAGS()
+
+  // async_evaluating_ordinal, top_level_capability, pending_async_dependencies,
+  // and async_parent_modules are used exclusively during evaluation of async
+  // modules and the modules which depend on them.
+  //
+  // If >1, this module is async and evaluating or currently evaluating an async
+  // child. The integer is an ordinal for when this module first started async
+  // evaluation and is used for sorting async parent modules when determining
+  // which parent module can start executing after an async evaluation
+  // completes.
+  //
+  // If 1, this module has finished async evaluating.
+  //
+  // If 0, this module is not async or has not been async evaluated.
+  static constexpr unsigned kNotAsyncEvaluated = 0;
+  static constexpr unsigned kAsyncEvaluateDidFinish = 1;
+  STATIC_ASSERT(kNotAsyncEvaluated < kAsyncEvaluateDidFinish);
+  STATIC_ASSERT(kAsyncEvaluateDidFinish < kFirstAsyncEvaluatingOrdinal);
+  STATIC_ASSERT(kMaxModuleAsyncEvaluatingOrdinal ==
+                AsyncEvaluatingOrdinalBits::kMax);
+  DECL_PRIMITIVE_ACCESSORS(async_evaluating_ordinal, unsigned)
+
+  // The parent modules of a given async dependency, use async_parent_modules()
+  // to retrieve the ArrayList representation.
+  DECL_ACCESSORS(async_parent_modules, ArrayList)
 
   // Helpers for Instantiate and Evaluate.
-
   static void CreateExport(Isolate* isolate, Handle<SourceTextModule> module,
                            int cell_index, Handle<FixedArray> names);
   static void CreateIndirectExport(Isolate* isolate,
@@ -103,7 +149,7 @@ class SourceTextModule : public Module {
       MessageLocation loc, bool must_resolve, ResolveSet* resolve_set);
   static V8_WARN_UNUSED_RESULT MaybeHandle<Cell> ResolveImport(
       Isolate* isolate, Handle<SourceTextModule> module, Handle<String> name,
-      int module_request, MessageLocation loc, bool must_resolve,
+      int module_request_index, MessageLocation loc, bool must_resolve,
       ResolveSet* resolve_set);
 
   static V8_WARN_UNUSED_RESULT MaybeHandle<Cell> ResolveExportUsingStarExports(
@@ -113,7 +159,9 @@ class SourceTextModule : public Module {
 
   static V8_WARN_UNUSED_RESULT bool PrepareInstantiate(
       Isolate* isolate, Handle<SourceTextModule> module,
-      v8::Local<v8::Context> context, v8::Module::ResolveCallback callback);
+      v8::Local<v8::Context> context,
+      v8::Module::ResolveModuleCallback callback,
+      Module::DeprecatedResolveCallback callback_without_import_assertions);
   static V8_WARN_UNUSED_RESULT bool FinishInstantiate(
       Isolate* isolate, Handle<SourceTextModule> module,
       ZoneForwardList<Handle<SourceTextModule>>* stack, unsigned* dfs_index,
@@ -125,7 +173,20 @@ class SourceTextModule : public Module {
                                Handle<SourceTextModule> module, Zone* zone,
                                UnorderedModuleSet* visited);
 
+  static void GatherAsyncParentCompletions(Isolate* isolate, Zone* zone,
+                                           Handle<SourceTextModule> start,
+                                           AsyncParentCompletionSet* exec_list);
+
+  // Implementation of spec concrete method Evaluate.
+  static V8_WARN_UNUSED_RESULT MaybeHandle<Object> EvaluateMaybeAsync(
+      Isolate* isolate, Handle<SourceTextModule> module);
+
+  // Continued implementation of spec concrete method Evaluate.
   static V8_WARN_UNUSED_RESULT MaybeHandle<Object> Evaluate(
+      Isolate* isolate, Handle<SourceTextModule> module);
+
+  // Implementation of spec abstract operation InnerModuleEvaluation.
+  static V8_WARN_UNUSED_RESULT MaybeHandle<Object> InnerModuleEvaluation(
       Isolate* isolate, Handle<SourceTextModule> module,
       ZoneForwardList<Handle<SourceTextModule>>* stack, unsigned* dfs_index);
 
@@ -133,9 +194,23 @@ class SourceTextModule : public Module {
       Isolate* isolate, Handle<SourceTextModule> module,
       ZoneForwardList<Handle<SourceTextModule>>* stack, Status new_status);
 
+  // Implementation of spec ExecuteModule is broken up into
+  // InnerExecuteAsyncModule for asynchronous modules and ExecuteModule
+  // for synchronous modules.
+  static V8_WARN_UNUSED_RESULT MaybeHandle<Object> InnerExecuteAsyncModule(
+      Isolate* isolate, Handle<SourceTextModule> module,
+      Handle<JSPromise> capability);
+
+  static V8_WARN_UNUSED_RESULT MaybeHandle<Object> ExecuteModule(
+      Isolate* isolate, Handle<SourceTextModule> module);
+
+  // Implementation of spec ExecuteAsyncModule.
+  static void ExecuteAsyncModule(Isolate* isolate,
+                                 Handle<SourceTextModule> module);
+
   static void Reset(Isolate* isolate, Handle<SourceTextModule> module);
 
-  OBJECT_CONSTRUCTORS(SourceTextModule, Module);
+  TQ_OBJECT_CONSTRUCTORS(SourceTextModule)
 };
 
 // SourceTextModuleInfo is to SourceTextModuleDescriptor what ScopeInfo is to
@@ -144,7 +219,8 @@ class SourceTextModuleInfo : public FixedArray {
  public:
   DECL_CAST(SourceTextModuleInfo)
 
-  static Handle<SourceTextModuleInfo> New(Isolate* isolate, Zone* zone,
+  template <typename IsolateT>
+  static Handle<SourceTextModuleInfo> New(IsolateT* isolate, Zone* zone,
                                           SourceTextModuleDescriptor* descr);
 
   inline FixedArray module_requests() const;
@@ -152,7 +228,6 @@ class SourceTextModuleInfo : public FixedArray {
   inline FixedArray regular_exports() const;
   inline FixedArray regular_imports() const;
   inline FixedArray namespace_imports() const;
-  inline FixedArray module_request_positions() const;
 
   // Accessors for [regular_exports].
   int RegularExportCount() const;
@@ -165,7 +240,8 @@ class SourceTextModuleInfo : public FixedArray {
 #endif
 
  private:
-  friend class Factory;
+  template <typename Impl>
+  friend class FactoryBase;
   friend class SourceTextModuleDescriptor;
   enum {
     kModuleRequestsIndex,
@@ -173,7 +249,6 @@ class SourceTextModuleInfo : public FixedArray {
     kRegularExportsIndex,
     kNamespaceImportsIndex,
     kRegularImportsIndex,
-    kModuleRequestPositionsIndex,
     kLength
   };
   enum {
@@ -186,30 +261,39 @@ class SourceTextModuleInfo : public FixedArray {
   OBJECT_CONSTRUCTORS(SourceTextModuleInfo, FixedArray);
 };
 
-class SourceTextModuleInfoEntry : public Struct {
+class ModuleRequest
+    : public TorqueGeneratedModuleRequest<ModuleRequest, Struct> {
  public:
-  DECL_CAST(SourceTextModuleInfoEntry)
+  NEVER_READ_ONLY_SPACE
+  DECL_VERIFIER(ModuleRequest)
+
+  template <typename IsolateT>
+  static Handle<ModuleRequest> New(IsolateT* isolate, Handle<String> specifier,
+                                   Handle<FixedArray> import_assertions,
+                                   int position);
+
+  // The number of entries in the import_assertions FixedArray that are used for
+  // a single assertion.
+  static const size_t kAssertionEntrySize = 3;
+
+  TQ_OBJECT_CONSTRUCTORS(ModuleRequest)
+};
+
+class SourceTextModuleInfoEntry
+    : public TorqueGeneratedSourceTextModuleInfoEntry<SourceTextModuleInfoEntry,
+                                                      Struct> {
+ public:
   DECL_PRINTER(SourceTextModuleInfoEntry)
   DECL_VERIFIER(SourceTextModuleInfoEntry)
 
-  DECL_ACCESSORS(export_name, Object)
-  DECL_ACCESSORS(local_name, Object)
-  DECL_ACCESSORS(import_name, Object)
-  DECL_INT_ACCESSORS(module_request)
-  DECL_INT_ACCESSORS(cell_index)
-  DECL_INT_ACCESSORS(beg_pos)
-  DECL_INT_ACCESSORS(end_pos)
-
+  template <typename IsolateT>
   static Handle<SourceTextModuleInfoEntry> New(
-      Isolate* isolate, Handle<Object> export_name, Handle<Object> local_name,
-      Handle<Object> import_name, int module_request, int cell_index,
-      int beg_pos, int end_pos);
+      IsolateT* isolate, Handle<PrimitiveHeapObject> export_name,
+      Handle<PrimitiveHeapObject> local_name,
+      Handle<PrimitiveHeapObject> import_name, int module_request,
+      int cell_index, int beg_pos, int end_pos);
 
-  DEFINE_FIELD_OFFSET_CONSTANTS(
-      Struct::kHeaderSize,
-      TORQUE_GENERATED_SOURCE_TEXT_MODULE_INFO_ENTRY_FIELDS)
-
-  OBJECT_CONSTRUCTORS(SourceTextModuleInfoEntry, Struct);
+  TQ_OBJECT_CONSTRUCTORS(SourceTextModuleInfoEntry)
 };
 
 }  // namespace internal

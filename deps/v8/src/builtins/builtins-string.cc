@@ -40,14 +40,16 @@ bool IsValidCodePoint(Isolate* isolate, Handle<Object> value) {
   return true;
 }
 
+static constexpr uc32 kInvalidCodePoint = static_cast<uc32>(-1);
+
 uc32 NextCodePoint(Isolate* isolate, BuiltinArguments args, int index) {
   Handle<Object> value = args.at(1 + index);
-  ASSIGN_RETURN_ON_EXCEPTION_VALUE(isolate, value,
-                                   Object::ToNumber(isolate, value), -1);
+  ASSIGN_RETURN_ON_EXCEPTION_VALUE(
+      isolate, value, Object::ToNumber(isolate, value), kInvalidCodePoint);
   if (!IsValidCodePoint(isolate, value)) {
     isolate->Throw(*isolate->factory()->NewRangeError(
         MessageTemplate::kInvalidCodePoint, value));
-    return -1;
+    return kInvalidCodePoint;
   }
   return DoubleToUint32(value->Number());
 }
@@ -69,7 +71,7 @@ BUILTIN(StringFromCodePoint) {
   int index;
   for (index = 0; index < length; index++) {
     code = NextCodePoint(isolate, args, index);
-    if (code < 0) {
+    if (code == kInvalidCodePoint) {
       return ReadOnlyRoots(isolate).exception();
     }
     if (code > String::kMaxOneByteCharCode) {
@@ -99,7 +101,7 @@ BUILTIN(StringFromCodePoint) {
       break;
     }
     code = NextCodePoint(isolate, args, index);
-    if (code < 0) {
+    if (code == kInvalidCodePoint) {
       return ReadOnlyRoots(isolate).exception();
     }
   }
@@ -110,7 +112,7 @@ BUILTIN(StringFromCodePoint) {
       isolate->factory()->NewRawTwoByteString(
           static_cast<int>(one_byte_buffer.size() + two_byte_buffer.size())));
 
-  DisallowHeapAllocation no_gc;
+  DisallowGarbageCollection no_gc;
   CopyChars(result->GetChars(no_gc), one_byte_buffer.data(),
             one_byte_buffer.size());
   CopyChars(result->GetChars(no_gc) + one_byte_buffer.size(),
@@ -136,31 +138,32 @@ BUILTIN(StringPrototypeLocaleCompare) {
   HandleScope handle_scope(isolate);
 
   isolate->CountUsage(v8::Isolate::UseCounterFeature::kStringLocaleCompare);
+  const char* method = "String.prototype.localeCompare";
 
 #ifdef V8_INTL_SUPPORT
-  TO_THIS_STRING(str1, "String.prototype.localeCompare");
+  TO_THIS_STRING(str1, method);
   Handle<String> str2;
   ASSIGN_RETURN_FAILURE_ON_EXCEPTION(
       isolate, str2, Object::ToString(isolate, args.atOrUndefined(isolate, 1)));
   RETURN_RESULT_OR_FAILURE(
-      isolate, Intl::StringLocaleCompare(isolate, str1, str2,
-                                         args.atOrUndefined(isolate, 2),
-                                         args.atOrUndefined(isolate, 3)));
+      isolate, Intl::StringLocaleCompare(
+                   isolate, str1, str2, args.atOrUndefined(isolate, 2),
+                   args.atOrUndefined(isolate, 3), method));
 #else
-  DCHECK_EQ(2, args.length());
+  DCHECK_LE(2, args.length());
 
-  TO_THIS_STRING(str1, "String.prototype.localeCompare");
+  TO_THIS_STRING(str1, method);
   Handle<String> str2;
   ASSIGN_RETURN_FAILURE_ON_EXCEPTION(isolate, str2,
                                      Object::ToString(isolate, args.at(1)));
 
-  if (str1.is_identical_to(str2)) return Smi::kZero;  // Equal.
+  if (str1.is_identical_to(str2)) return Smi::zero();  // Equal.
   int str1_length = str1->length();
   int str2_length = str2->length();
 
   // Decide trivial cases without flattening.
   if (str1_length == 0) {
-    if (str2_length == 0) return Smi::kZero;  // Equal.
+    if (str2_length == 0) return Smi::zero();  // Equal.
     return Smi::FromInt(-str2_length);
   } else {
     if (str2_length == 0) return Smi::FromInt(str1_length);
@@ -177,7 +180,7 @@ BUILTIN(StringPrototypeLocaleCompare) {
   str1 = String::Flatten(isolate, str1);
   str2 = String::Flatten(isolate, str2);
 
-  DisallowHeapAllocation no_gc;
+  DisallowGarbageCollection no_gc;
   String::FlatContent flat1 = str1->GetFlatContent(no_gc);
   String::FlatContent flat2 = str2->GetFlatContent(no_gc);
 
@@ -208,14 +211,10 @@ BUILTIN(StringPrototypeNormalize) {
   ASSIGN_RETURN_FAILURE_ON_EXCEPTION(isolate, form,
                                      Object::ToString(isolate, form_input));
 
-  if (!(String::Equals(isolate, form,
-                       isolate->factory()->NewStringFromStaticChars("NFC")) ||
-        String::Equals(isolate, form,
-                       isolate->factory()->NewStringFromStaticChars("NFD")) ||
-        String::Equals(isolate, form,
-                       isolate->factory()->NewStringFromStaticChars("NFKC")) ||
-        String::Equals(isolate, form,
-                       isolate->factory()->NewStringFromStaticChars("NFKD")))) {
+  if (!(String::Equals(isolate, form, isolate->factory()->NFC_string()) ||
+        String::Equals(isolate, form, isolate->factory()->NFD_string()) ||
+        String::Equals(isolate, form, isolate->factory()->NFKC_string()) ||
+        String::Equals(isolate, form, isolate->factory()->NFKD_string()))) {
     Handle<String> valid_forms =
         isolate->factory()->NewStringFromStaticChars("NFC, NFD, NFKC, NFKD");
     THROW_NEW_ERROR_RETURN_FAILURE(
@@ -243,7 +242,7 @@ template <class Converter>
 V8_WARN_UNUSED_RESULT static Object ConvertCaseHelper(
     Isolate* isolate, String string, SeqString result, int result_length,
     unibrow::Mapping<Converter, 128>* mapping) {
-  DisallowHeapAllocation no_gc;
+  DisallowGarbageCollection no_gc;
   // We try this twice, once with the assumption that the result is no longer
   // than the input and, if that assumption breaks, again with the exact
   // length.  This may not be pretty, but it is nicer than what was here before
@@ -307,7 +306,7 @@ V8_WARN_UNUSED_RESULT static Object ConvertCaseHelper(
         if (char_length == 0) char_length = 1;
         current_length += char_length;
         if (current_length > String::kMaxLength) {
-          AllowHeapAllocation allocate_error_and_return;
+          AllowGarbageCollection allocate_error_and_return;
           THROW_NEW_ERROR_RETURN_FAILURE(isolate,
                                          NewInvalidStringLengthError());
         }
@@ -355,7 +354,7 @@ V8_WARN_UNUSED_RESULT static Object ConvertCase(
     // Same length as input.
     Handle<SeqOneByteString> result =
         isolate->factory()->NewRawOneByteString(length).ToHandleChecked();
-    DisallowHeapAllocation no_gc;
+    DisallowGarbageCollection no_gc;
     String::FlatContent flat_content = s->GetFlatContent(no_gc);
     DCHECK(flat_content.IsFlat());
     bool has_changed_character = false;

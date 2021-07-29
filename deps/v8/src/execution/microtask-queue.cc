@@ -113,8 +113,19 @@ void MicrotaskQueue::EnqueueMicrotask(Microtask microtask) {
 void MicrotaskQueue::PerformCheckpoint(v8::Isolate* v8_isolate) {
   if (!IsRunningMicrotasks() && !GetMicrotasksScopeDepth() &&
       !HasMicrotasksSuppressions()) {
+    std::unique_ptr<MicrotasksScope> microtasks_scope;
+    if (microtasks_policy_ == v8::MicrotasksPolicy::kScoped) {
+      // If we're using microtask scopes to schedule microtask execution, V8
+      // API calls will check that there's always a microtask scope on the
+      // stack. As the microtasks we're about to execute could invoke embedder
+      // callbacks which then calls back into V8, we create an artificial
+      // microtask scope here to avoid running into the CallDepthScope check.
+      microtasks_scope.reset(new v8::MicrotasksScope(
+          v8_isolate, this, v8::MicrotasksScope::kDoNotRunMicrotasks));
+    }
     Isolate* isolate = reinterpret_cast<Isolate*>(v8_isolate);
     RunMicrotasks(isolate);
+    isolate->ClearKeptObjects();
   }
 }
 
@@ -159,10 +170,13 @@ int MicrotaskQueue::RunMicrotasks(Isolate* isolate) {
     HandleScopeImplementer::EnteredContextRewindScope rewind_scope(
         isolate->handle_scope_implementer());
     TRACE_EVENT_BEGIN0("v8.execute", "RunMicrotasks");
-    TRACE_EVENT_CALL_STATS_SCOPED(isolate, "v8", "V8.RunMicrotasks");
-    maybe_result = Execution::TryRunMicrotasks(isolate, this, &maybe_exception);
-    processed_microtask_count =
-        static_cast<int>(finished_microtask_count_ - base_count);
+    {
+      TRACE_EVENT_CALL_STATS_SCOPED(isolate, "v8", "V8.RunMicrotasks");
+      maybe_result = Execution::TryRunMicrotasks(isolate, this,
+                                                 &maybe_exception);
+      processed_microtask_count =
+          static_cast<int>(finished_microtask_count_ - base_count);
+    }
     TRACE_EVENT_END1("v8.execute", "RunMicrotasks", "microtask_count",
                      processed_microtask_count);
   }
@@ -174,6 +188,7 @@ int MicrotaskQueue::RunMicrotasks(Isolate* isolate) {
     capacity_ = 0;
     size_ = 0;
     start_ = 0;
+    DCHECK(isolate->has_scheduled_exception());
     isolate->SetTerminationOnExternalTryCatch();
     OnCompleted(isolate);
     return -1;
@@ -249,12 +264,6 @@ Microtask MicrotaskQueue::get(intptr_t index) const {
 }
 
 void MicrotaskQueue::OnCompleted(Isolate* isolate) {
-  // TODO(marja): (spec) The discussion about when to clear the KeepDuringJob
-  // set is still open (whether to clear it after every microtask or once
-  // during a microtask checkpoint). See also
-  // https://github.com/tc39/proposal-weakrefs/issues/39 .
-  isolate->heap()->ClearKeptObjects();
-
   FireMicrotasksCompletedCallback(isolate);
 }
 

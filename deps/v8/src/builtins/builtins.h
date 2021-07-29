@@ -13,18 +13,19 @@ namespace v8 {
 namespace internal {
 
 class ByteArray;
+class CallInterfaceDescriptor;
 class Callable;
 template <typename T>
 class Handle;
 class Isolate;
 
 // Forward declarations.
-class BailoutId;
+class BytecodeOffset;
 class RootVisitor;
 enum class InterpreterPushArgsMode : unsigned;
 namespace compiler {
 class CodeAssemblerState;
-}
+}  // namespace compiler
 
 template <typename T>
 static constexpr T FirstFromVarArgs(T x, ...) noexcept {
@@ -39,12 +40,16 @@ class Builtins {
  public:
   explicit Builtins(Isolate* isolate) : isolate_(isolate) {}
 
+  Builtins(const Builtins&) = delete;
+  Builtins& operator=(const Builtins&) = delete;
+
   void TearDown();
 
   // Disassembler support.
   const char* Lookup(Address pc);
 
   enum Name : int32_t {
+    kNoBuiltinId = -1,
 #define DEF_ENUM(Name, ...) k##Name,
     BUILTIN_LIST(DEF_ENUM, DEF_ENUM, DEF_ENUM, DEF_ENUM, DEF_ENUM, DEF_ENUM,
                  DEF_ENUM)
@@ -58,8 +63,6 @@ class Builtins {
 #undef EXTRACT_NAME
   };
 
-  static const int32_t kNoBuiltinId = -1;
-
   static constexpr int kFirstWideBytecodeHandler =
       kFirstBytecodeHandler + kNumberOfBytecodeHandlers;
   static constexpr int kFirstExtraWideBytecodeHandler =
@@ -69,14 +72,16 @@ class Builtins {
   STATIC_ASSERT(kLastBytecodeHandlerPlusOne == builtin_count);
 
   static constexpr bool IsBuiltinId(int maybe_id) {
-    return 0 <= maybe_id && maybe_id < builtin_count;
+    STATIC_ASSERT(kNoBuiltinId == -1);
+    return static_cast<uint32_t>(maybe_id) <
+           static_cast<uint32_t>(builtin_count);
   }
 
   // The different builtin kinds are documented in builtins-definitions.h.
   enum Kind { CPP, TFJ, TFC, TFS, TFH, BCH, ASM };
 
-  static BailoutId GetContinuationBailoutId(Name name);
-  static Name GetBuiltinFromBailoutId(BailoutId);
+  static BytecodeOffset GetContinuationBytecodeOffset(Name name);
+  static Name GetBuiltinFromBytecodeOffset(BytecodeOffset);
 
   // Convenience wrappers.
   Handle<Code> CallFunction(ConvertReceiverMode = ConvertReceiverMode::kAny);
@@ -92,7 +97,9 @@ class Builtins {
   V8_EXPORT_PRIVATE Code builtin(int index);
   V8_EXPORT_PRIVATE Handle<Code> builtin_handle(int index);
 
+  static CallInterfaceDescriptor CallInterfaceDescriptorFor(Name name);
   V8_EXPORT_PRIVATE static Callable CallableFor(Isolate* isolate, Name name);
+  static bool HasJSLinkage(int index);
 
   static int GetStackParameterCount(Name name);
 
@@ -133,14 +140,9 @@ class Builtins {
     return kAllBuiltinsAreIsolateIndependent;
   }
 
-  // Wasm runtime stubs are treated specially by wasm. To guarantee reachability
-  // through near jumps, their code is completely copied into a fresh off-heap
-  // area.
-  static bool IsWasmRuntimeStub(int index);
-
-  // Updates the table of builtin entry points based on the current contents of
-  // the builtins table.
-  static void UpdateBuiltinEntryTable(Isolate* isolate);
+  // Initializes the table of builtin entry points based on the current contents
+  // of the builtins table.
+  static void InitializeBuiltinEntryTable(Isolate* isolate);
 
   // Emits a CodeCreateEvent for every builtin.
   static void EmitCodeCreateEvents(Isolate* isolate);
@@ -170,13 +172,20 @@ class Builtins {
   // Creates a trampoline code object that jumps to the given off-heap entry.
   // The result should not be used directly, but only from the related Factory
   // function.
-  static Handle<Code> GenerateOffHeapTrampolineFor(Isolate* isolate,
-                                                   Address off_heap_entry,
-                                                   int32_t kind_specific_flags);
+  // TODO(delphick): Come up with a better name since it may not generate an
+  // executable trampoline.
+  static Handle<Code> GenerateOffHeapTrampolineFor(
+      Isolate* isolate, Address off_heap_entry, int32_t kind_specific_flags,
+      bool generate_jump_to_instruction_stream);
 
   // Generate the RelocInfo ByteArray that would be generated for an offheap
   // trampoline.
   static Handle<ByteArray> GenerateOffHeapTrampolineRelocInfo(Isolate* isolate);
+
+  // Only builtins with JS linkage should ever need to be called via their
+  // trampoline Code object. The remaining builtins have non-executable Code
+  // objects.
+  static bool CodeObjectIsExecutable(int builtin_index);
 
   static bool IsJSEntryVariant(int builtin_index) {
     switch (builtin_index) {
@@ -245,8 +254,6 @@ class Builtins {
   int js_entry_handler_offset_ = 0;
 
   friend class SetupIsolateDelegate;
-
-  DISALLOW_COPY_AND_ASSIGN(Builtins);
 };
 
 Builtins::Name ExampleBuiltinForTorqueFunctionPointerType(
